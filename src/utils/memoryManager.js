@@ -56,7 +56,10 @@ class MemoryManager {
         // 执行垃圾回收
         if (heapUsagePercent > this.forceGcThreshold) {
             this.forceGarbageCollection();
-            this.cleanupBrowserContexts();
+            // 不阻塞监控循环，异步清理
+            this.cleanupBrowserContexts().catch(err => {
+                console.error('Error during async cleanup:', err.message);
+            });
         } else if (heapUsagePercent > this.gcThreshold) {
             this.softGarbageCollection();
         }
@@ -95,14 +98,15 @@ class MemoryManager {
         }
     }
 
-    cleanupBrowserContexts() {
+    async cleanupBrowserContexts() {
         if (global.browserContexts && global.browserContexts.size > 0) {
             console.log(`🧹 Cleaning up ${global.browserContexts.size} browser contexts`);
             
             const contextsToClean = Array.from(global.browserContexts);
             let cleaned = 0;
             
-            contextsToClean.forEach(async (context) => {
+            // 使用 Promise.all 并行关闭所有上下文
+            const cleanupPromises = contextsToClean.map(async (context) => {
                 try {
                     await context.close().catch(() => {});
                     global.browserContexts.delete(context);
@@ -112,20 +116,22 @@ class MemoryManager {
                 }
             });
             
+            await Promise.all(cleanupPromises);
+            
             if (cleaned > 0) {
                 console.log(`✅ Cleaned up ${cleaned} browser contexts`);
             }
         }
     }
 
-    forceCleanup() {
+    async forceCleanup() {
         console.log('🔧 执行强制内存清理...');
         
         // 强制垃圾回收
         this.forceGarbageCollection();
         
         // 清理浏览器上下文
-        this.cleanupBrowserContexts();
+        await this.cleanupBrowserContexts();
         
         // 额外的清理步骤
         if (global.gc) {

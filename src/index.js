@@ -440,91 +440,97 @@ async function handleClearanceRequest(req, res, data) {
         console.log('Request timeout, cleaning up')
     }, global.timeOut + 5000)
 
-    switch (data.mode) {
-        case "source":
-            result = await getSource(data).then(res => { return { source: res, code: 200 } }).catch(err => { return { code: 500, message: err.message } })
-            break;
-        case "turnstile-min":
-            result = await solveTurnstileMin(data).then(res => { return { token: res, code: 200 } }).catch(err => { return { code: 500, message: err.message } })
-            break;
-        case "turnstile-max":
-            result = await solveTurnstileMax(data).then(res => { return { token: res, code: 200 } }).catch(err => { return { code: 500, message: err.message } })
-            break;
-        case "waf-session":
-            result = await wafSession(data).then(res => { return { ...res, code: 200 } }).catch(err => { return { code: 500, message: err.message } })
-            break;
-        case "cfcookie":
-            result = await getCfClearance(data).then(res => { return { cf_clearance: res, code: 200 } }).catch(err => { return { code: 500, message: err.message } })
-            break;
-        case "recaptchav2":
-            result = await handleRecaptchaV2Solve(data).catch(err => { return { code: 500, message: err.message } })
-            break;
-        case "recaptchav3":
-            result = await handleRecaptchaV3Solve(data).catch(err => { return { code: 500, message: err.message } })
-            break;
-    }
-
-    global.activeRequestCount--
-    clearTimeout(requestTimeout)
-    
-    // 更新监控数据 - 先获取请求信息，再删除
-    const request = global.monitoringData.activeRequests.get(requestId)
-    const requestStartTime = request?.startTime
-    
-    if (request) {
-        if (request.mode === 'hcaptcha') {
-            global.monitoringData.activeRequestsByService.hcaptcha--;
-        } else if (request.mode === 'recaptchav2') {
-            global.monitoringData.activeRequestsByService.recaptchav2--;
-        } else if (request.mode === 'recaptchav3') {
-            global.monitoringData.activeRequestsByService.recaptchav3--;
-        } else {
-            global.monitoringData.activeRequestsByService.cloudflare--;
+    try {
+        switch (data.mode) {
+            case "source":
+                result = await getSource(data).then(res => { return { source: res, code: 200 } }).catch(err => { return { code: 500, message: err.message } })
+                break;
+            case "turnstile-min":
+                result = await solveTurnstileMin(data).then(res => { return { token: res, code: 200 } }).catch(err => { return { code: 500, message: err.message } })
+                break;
+            case "turnstile-max":
+                result = await solveTurnstileMax(data).then(res => { return { token: res, code: 200 } }).catch(err => { return { code: 500, message: err.message } })
+                break;
+            case "waf-session":
+                result = await wafSession(data).then(res => { return { ...res, code: 200 } }).catch(err => { return { code: 500, message: err.message } })
+                break;
+            case "cfcookie":
+                result = await getCfClearance(data).then(res => { return { cf_clearance: res, code: 200 } }).catch(err => { return { code: 500, message: err.message } })
+                break;
+            case "recaptchav2":
+                result = await handleRecaptchaV2Solve(data).catch(err => { return { code: 500, message: err.message } })
+                break;
+            case "recaptchav3":
+                result = await handleRecaptchaV3Solve(data).catch(err => { return { code: 500, message: err.message } })
+                break;
         }
-    }
-    global.monitoringData.activeRequests.delete(requestId)
-    
-    if (result.code === 200) {
-        global.monitoringData.successfulRequests++
+    } catch (error) {
+        console.error('Unexpected error in request handler:', error);
+        result = { code: 500, message: error.message || 'Unexpected error occurred' };
+    } finally {
+        // 确保资源总是被清理，即使发生未捕获的异常
+        global.activeRequestCount--
+        clearTimeout(requestTimeout)
         
-        // 记录token（如果有）
-        if (result.token) {
-            global.monitoringData.recentTokens.unshift({
-                token: result.token,
-                url: data.url,
-                mode: data.mode,
-                timestamp: new Date(),
-                requestId: requestId
-            })
-            
-            // 只保留最近50个token
-            if (global.monitoringData.recentTokens.length > 50) {
-                global.monitoringData.recentTokens = global.monitoringData.recentTokens.slice(0, 50)
+        // 更新监控数据 - 先获取请求信息，再删除
+        const request = global.monitoringData.activeRequests.get(requestId)
+        const requestStartTime = request?.startTime
+        
+        if (request) {
+            if (request.mode === 'hcaptcha') {
+                global.monitoringData.activeRequestsByService.hcaptcha--;
+            } else if (request.mode === 'recaptchav2') {
+                global.monitoringData.activeRequestsByService.recaptchav2--;
+            } else if (request.mode === 'recaptchav3') {
+                global.monitoringData.activeRequestsByService.recaptchav3--;
+            } else {
+                global.monitoringData.activeRequestsByService.cloudflare--;
             }
         }
-    } else {
-        global.monitoringData.failedRequests++
-    }
-    
-    // 记录请求历史 - 使用之前获取的开始时间
-    global.monitoringData.requestHistory.unshift({
-        requestId: requestId,
-        url: data.url,
-        mode: data.mode,
-        success: result.code === 200,
-        timestamp: new Date(),
-        responseTime: requestStartTime ? Date.now() - requestStartTime.getTime() : 0
-    })
-    
-    // 只保留最近100条历史
-    if (global.monitoringData.requestHistory.length > 100) {
-        global.monitoringData.requestHistory = global.monitoringData.requestHistory.slice(0, 100)
-    }
-    
-    // 检查内存使用情况
-    const memStats = memoryManager.checkMemoryUsage()
-    if (memStats.heapUsagePercent > 0.8) {
-        console.log('⚠️  High memory usage after request completion')
+        global.monitoringData.activeRequests.delete(requestId)
+        
+        if (result.code === 200) {
+            global.monitoringData.successfulRequests++
+            
+            // 记录token（如果有）
+            if (result.token) {
+                global.monitoringData.recentTokens.unshift({
+                    token: result.token,
+                    url: data.url,
+                    mode: data.mode,
+                    timestamp: new Date(),
+                    requestId: requestId
+                })
+                
+                // 只保留最近50个token
+                if (global.monitoringData.recentTokens.length > 50) {
+                    global.monitoringData.recentTokens = global.monitoringData.recentTokens.slice(0, 50)
+                }
+            }
+        } else {
+            global.monitoringData.failedRequests++
+        }
+        
+        // 记录请求历史 - 使用之前获取的开始时间
+        global.monitoringData.requestHistory.unshift({
+            requestId: requestId,
+            url: data.url,
+            mode: data.mode,
+            success: result.code === 200,
+            timestamp: new Date(),
+            responseTime: requestStartTime ? Date.now() - requestStartTime.getTime() : 0
+        })
+        
+        // 只保留最近100条历史
+        if (global.monitoringData.requestHistory.length > 100) {
+            global.monitoringData.requestHistory = global.monitoringData.requestHistory.slice(0, 100)
+        }
+        
+        // 检查内存使用情况
+        const memStats = memoryManager.checkMemoryUsage()
+        if (memStats.heapUsagePercent > 0.8) {
+            console.log('⚠️  High memory usage after request completion')
+        }
     }
 
     res.status(result.code ?? 500).send(result)
@@ -621,67 +627,84 @@ app.post('/api/service/restart', async (_, res) => {
     try {
         console.log('🔄 开始重启服务...')
         
-        // 清理浏览器实例和上下文
-        await cleanupBrowserInstances()
-        
-        // 重置监控数据
-        global.monitoringData = {
-            startTime: new Date(),
-            totalRequests: 0,
-            successfulRequests: 0,
-            failedRequests: 0,
-            activeRequests: new Map(),
-            recentTokens: [],
-            requestHistory: [],
-            activeRequestsByService: {
-                cloudflare: 0,
-                hcaptcha: 0,
-                recaptchav2: 0,
-                recaptchav3: 0
-            },
-            lastRequestTime: new Date()
-        }
-        
-        // 重置活跃请求计数
-        global.activeRequestCount = 0
-        
-        // 触发内存清理
-        memoryManager.forceCleanup()
-        
-        // 重新初始化浏览器（延迟执行避免阻塞响应）
-        setTimeout(async () => {
-            try {
-                console.log('🔄 等待系统稳定后重新初始化...')
-                
-                // 等待更长时间确保所有清理完成
-                await new Promise(resolve => setTimeout(resolve, 3000))
-                
-                // 重置重启标志
-                global.restarting = false
-                
-                if (process.env.SKIP_LAUNCH != 'true') {
-                    console.log('🚀 开始重新初始化浏览器...')
-                    await require('../captcha-solvers/turnstile/module/createBrowser')()
-                }
-                console.log('✅ 服务重启完成')
-            } catch (error) {
-                console.error('❌ 重新初始化浏览器失败:', error.message)
-                // 确保即使失败也重置标志
-                global.restarting = false
-            }
-        }, 1000)
-        
+        // 发送立即响应，但继续执行重启过程
         res.json({ 
             message: 'Service restart initiated successfully',
             timestamp: new Date(),
             status: 'restarting'
         })
         
-    } catch (error) {
-        console.error('❌ 服务重启失败:', error.message)
-        res.status(500).json({ 
-            message: 'Service restart failed: ' + error.message 
+        // 在响应后执行重启
+        setImmediate(async () => {
+            try {
+                // 清理浏览器实例和上下文
+                await cleanupBrowserInstances()
+                
+                // 重置监控数据
+                global.monitoringData = {
+                    startTime: new Date(),
+                    totalRequests: 0,
+                    successfulRequests: 0,
+                    failedRequests: 0,
+                    activeRequests: new Map(),
+                    recentTokens: [],
+                    requestHistory: [],
+                    activeRequestsByService: {
+                        cloudflare: 0,
+                        hcaptcha: 0,
+                        recaptchav2: 0,
+                        recaptchav3: 0
+                    },
+                    lastRequestTime: new Date()
+                }
+                
+                // 重置活跃请求计数
+                global.activeRequestCount = 0
+                
+                // 触发内存清理
+                await memoryManager.forceCleanup()
+                
+                // 等待系统稳定
+                console.log('🔄 等待系统稳定后重新初始化...')
+                await new Promise(resolve => setTimeout(resolve, 3000))
+                
+                // 重置重启标志
+                global.restarting = false
+                
+                // 重新初始化浏览器
+                if (process.env.SKIP_LAUNCH != 'true') {
+                    console.log('🚀 开始重新初始化浏览器...')
+                    await require('../captcha-solvers/turnstile/module/createBrowser')()
+                    console.log('✅ 服务重启完成')
+                } else {
+                    console.log('✅ 服务重启完成（跳过浏览器启动）')
+                }
+            } catch (error) {
+                console.error('❌ 服务重启过程失败:', error.message)
+                console.error('Stack:', error.stack)
+                // 确保即使失败也重置标志，避免永久锁定
+                global.restarting = false
+                
+                // 尝试恢复服务
+                console.log('⚠️  尝试恢复服务...')
+                try {
+                    if (process.env.SKIP_LAUNCH != 'true' && !global.browser) {
+                        await require('../captcha-solvers/turnstile/module/createBrowser')()
+                        console.log('✅ 服务恢复成功')
+                    }
+                } catch (recoveryError) {
+                    console.error('❌ 服务恢复失败:', recoveryError.message)
+                }
+            }
         })
+        
+    } catch (error) {
+        console.error('❌ 服务重启启动失败:', error.message)
+        if (!res.headersSent) {
+            res.status(500).json({ 
+                message: 'Service restart failed: ' + error.message 
+            })
+        }
     }
 })
 
@@ -805,33 +828,40 @@ async function performAutoRestart() {
         global.activeRequestCount = 0
         
         // 触发内存清理
-        memoryManager.forceCleanup()
+        await memoryManager.forceCleanup()
+        
+        // 等待系统稳定
+        console.log('🔄 自动重启等待系统稳定后重新初始化...')
+        await new Promise(resolve => setTimeout(resolve, 3000))
+        
+        // 重置重启标志
+        global.restarting = false
         
         // 重新初始化浏览器
-        setTimeout(async () => {
-            try {
-                console.log('🔄 自动重启等待系统稳定后重新初始化...')
-                
-                // 等待更长时间确保所有清理完成
-                await new Promise(resolve => setTimeout(resolve, 3000))
-                
-                // 重置重启标志
-                global.restarting = false
-                
-                if (process.env.SKIP_LAUNCH != 'true') {
-                    console.log('🚀 自动重启开始重新初始化浏览器...')
-                    await require('../captcha-solvers/turnstile/module/createBrowser')()
-                }
-                console.log('✅ 自动重启完成')
-            } catch (error) {
-                console.error('❌ 自动重启重新初始化浏览器失败:', error.message)
-                // 确保即使失败也重置标志
-                global.restarting = false
-            }
-        }, 1000)
+        if (process.env.SKIP_LAUNCH != 'true') {
+            console.log('🚀 自动重启开始重新初始化浏览器...')
+            await require('../captcha-solvers/turnstile/module/createBrowser')()
+            console.log('✅ 自动重启完成')
+        } else {
+            console.log('✅ 自动重启完成（跳过浏览器启动）')
+        }
         
     } catch (error) {
         console.error('❌ 自动重启失败:', error.message)
+        console.error('Stack:', error.stack)
+        // 确保即使失败也重置标志
+        global.restarting = false
+        
+        // 尝试恢复服务
+        console.log('⚠️  尝试恢复服务...')
+        try {
+            if (process.env.SKIP_LAUNCH != 'true' && !global.browser) {
+                await require('../captcha-solvers/turnstile/module/createBrowser')()
+                console.log('✅ 服务恢复成功')
+            }
+        } catch (recoveryError) {
+            console.error('❌ 服务恢复失败:', recoveryError.message)
+        }
     }
 }
 

@@ -55,7 +55,7 @@ function getSource({ url, proxy }) {
         return reject("Failed to create browser context");
       }
 
-      const page = await context.newPage();
+      page = await context.newPage();
 
       if (proxy?.username && proxy?.password)
         await page.authenticate({

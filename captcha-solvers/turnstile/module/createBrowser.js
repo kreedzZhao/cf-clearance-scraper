@@ -52,9 +52,8 @@ async function createBrowser(options = {}) {
                             context = await global.browser.createBrowserContext({
                                 // 优化上下文设置，减少资源占用
                                 ignoreHTTPSErrors: true,
-                                proxyServer: proxy ? `http://${proxy.host}:${proxy.port}` : undefined,
+                                proxyServer: `http://${proxy.host}:${proxy.port}`,
                             });
-                            return context;
                         } else {    
                             context = await global.browser.createBrowserContext({
                                 // 优化上下文设置，减少资源占用
@@ -75,15 +74,39 @@ async function createBrowser(options = {}) {
                 // 达到最大限制，等待可用上下文
                 console.log(`⏳ Context pool full, waiting for available context (${this.used} active, ${this.waitingQueue.length} waiting)`);
                 return new Promise((resolve, reject) => {
-                    const timeout = setTimeout(() => {
-                        const index = this.waitingQueue.findIndex(item => item.resolve === resolve);
-                        if (index !== -1) {
-                            this.waitingQueue.splice(index, 1);
+                    let isResolved = false;
+                    
+                    const wrappedResolve = (value) => {
+                        if (!isResolved) {
+                            isResolved = true;
+                            resolve(value);
                         }
-                        reject(new Error('Context pool timeout'));
+                    };
+                    
+                    const wrappedReject = (error) => {
+                        if (!isResolved) {
+                            isResolved = true;
+                            reject(error);
+                        }
+                    };
+                    
+                    const timeout = setTimeout(() => {
+                        if (!isResolved) {
+                            const index = this.waitingQueue.findIndex(item => item.wrappedResolve === wrappedResolve);
+                            if (index !== -1) {
+                                this.waitingQueue.splice(index, 1);
+                            }
+                            wrappedReject(new Error('Context pool timeout'));
+                        }
                     }, 30000); // 30秒超时
                     
-                    this.waitingQueue.push({ resolve, reject, timeout });
+                    this.waitingQueue.push({ 
+                        resolve: wrappedResolve, 
+                        reject: wrappedReject, 
+                        timeout,
+                        wrappedResolve,
+                        wrappedReject
+                    });
                 });
             },
             
@@ -94,13 +117,17 @@ async function createBrowser(options = {}) {
                 
                 // 检查是否有等待的请求
                 if (this.waitingQueue.length > 0) {
+                    const waitingRequest = this.waitingQueue.shift();
+                    
                     try {
+                        // 清理超时定时器，防止内存泄漏
+                        if (waitingRequest.timeout) {
+                            clearTimeout(waitingRequest.timeout);
+                        }
+                        
                         // 清理页面但保留上下文给等待的请求
                         const pages = await context.pages();
                         await Promise.all(pages.map(page => page.close().catch(() => {})));
-                        
-                        const waitingRequest = this.waitingQueue.shift();
-                        clearTimeout(waitingRequest.timeout);
                         
                         this.used++;
                         const usage = this.contextUsage.get(context) || 0;
@@ -111,12 +138,8 @@ async function createBrowser(options = {}) {
                         return;
                     } catch (e) {
                         console.error("Error transferring context to waiting request:", e.message);
-                        // 失败的话，处理等待的请求
-                        if (this.waitingQueue.length > 0) {
-                            const waitingRequest = this.waitingQueue.shift();
-                            clearTimeout(waitingRequest.timeout);
-                            waitingRequest.reject(new Error('Context transfer failed'));
-                        }
+                        // 失败的话，拒绝等待的请求
+                        waitingRequest.reject(new Error('Context transfer failed: ' + e.message));
                     }
                 }
                 
