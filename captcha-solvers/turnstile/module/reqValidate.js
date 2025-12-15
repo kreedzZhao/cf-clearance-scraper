@@ -41,6 +41,10 @@ const schema = {
             },
             "additionalProperties": false
         },
+        "proxyString": {
+            "type": "string",
+            "format": "uri"
+        },
         "authToken": {
             "type": "string"
         },

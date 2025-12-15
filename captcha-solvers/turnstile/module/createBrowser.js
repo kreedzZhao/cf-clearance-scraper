@@ -25,7 +25,7 @@ async function createBrowser(options = {}) {
             waitingQueue: [], // 等待队列
             contextUsage: new Map(), // 跟踪每个上下文的使用次数
             
-            async getContext() {
+            async getContext(proxy) {
                 // 如果有可用的上下文，选择使用次数最少的
                 if (this.available.length > 0) {
                     // 按使用次数排序，选择最少使用的
@@ -47,10 +47,20 @@ async function createBrowser(options = {}) {
                 // 如果没有可用上下文且未达到最大限制，创建新的
                 if ((this.used + this.available.length) < this.maxSize) {
                     try {
-                        const context = await global.browser.createBrowserContext({
-                            // 优化上下文设置，减少资源占用
-                            ignoreHTTPSErrors: true,
-                        });
+                        let context = null;
+                        if (proxy) {
+                            context = await global.browser.createBrowserContext({
+                                // 优化上下文设置，减少资源占用
+                                ignoreHTTPSErrors: true,
+                                proxyServer: proxy ? `http://${proxy.host}:${proxy.port}` : undefined,
+                            });
+                            return context;
+                        } else {    
+                            context = await global.browser.createBrowserContext({
+                                // 优化上下文设置，减少资源占用
+                                ignoreHTTPSErrors: true,
+                            });
+                        }
                         
                         this.used++;
                         this.contextUsage.set(context, 1);

@@ -1,23 +1,60 @@
 function getSource({ url, proxy }) {
   return new Promise(async (resolve, reject) => {
     if (!url) return reject("Missing url parameter");
-    const context = await global.browser
-      .createBrowserContext({
-        proxyServer: proxy ? `http://${proxy.host}:${proxy.port}` : undefined, // https://pptr.dev/api/puppeteer.browsercontextoptions
-      })
-      .catch(() => null);
-    if (!context) return reject("Failed to create browser context");
 
+    let context = null;
+    let page = null;
     let isResolved = false;
-
-    var cl = setTimeout(async () => {
-      if (!isResolved) {
-        await context.close();
-        reject("Timeout Error");
+    let contextClosed = false;
+    
+    const cleanup = async () => {
+      if (page) {
+        try {
+          await page.close().catch(() => {});
+        } catch (e) {}
       }
-    }, global.timeOut || 60000);
+      if (context && !contextClosed) {
+        try {
+          contextClosed = true;
+          // 使用上下文池释放上下文
+          if (global.contextPool && typeof global.contextPool.releaseContext === 'function') {
+            await global.contextPool.releaseContext(context);
+          } else {
+            // 回退到直接关闭
+            await context.close();
+          }
+        } catch (e) {
+          console.error("Error releasing context:", e.message);
+        }
+      }
+    };
+    
+    const timeoutHandler = setTimeout(async () => {
+      if (!isResolved) {
+        isResolved = true;
+        await cleanup();
+        reject("Timeout Error - cf_clearance cookie not obtained");
+      }
+    }, global.timeOut || 120000);
 
     try {
+      // 使用上下文池获取上下文
+      if (global.contextPool && typeof global.contextPool.getContext === 'function') {
+        context = await global.contextPool.getContext(proxy);
+      } else {
+        // 回退到直接创建
+        context = await global.browser
+          .createBrowserContext({
+            proxyServer: proxy ? `http://${proxy.host}:${proxy.port}` : undefined,
+          })
+          .catch(() => null);
+      }
+        
+      if (!context) {
+        clearTimeout(timeoutHandler);
+        return reject("Failed to create browser context");
+      }
+
       const page = await context.newPage();
 
       if (proxy?.username && proxy?.password)
@@ -38,21 +75,26 @@ function getSource({ url, proxy }) {
               .waitForNavigation({ waitUntil: "load", timeout: 5000 })
               .catch(() => {});
             const html = await page.content();
-            await context.close();
+            // await context.close();
+            // isResolved = true;
+            // clearInterval(cl);
             isResolved = true;
-            clearInterval(cl);
+            clearTimeout(timeoutHandler);
+            await cleanup();
             resolve(html);
           }
         } catch (e) {}
       });
       await page.goto(url, {
         waitUntil: "domcontentloaded",
+        timeout: 30000
       });
     } catch (e) {
       if (!isResolved) {
-        await context.close();
-        clearInterval(cl);
-        reject(e.message);
+        isResolved = true;
+        clearTimeout(timeoutHandler);
+        await cleanup();
+        reject(e.message || 'Unknown error while getting source info');
       }
     }
   });

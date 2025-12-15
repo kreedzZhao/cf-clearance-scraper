@@ -244,6 +244,23 @@ async function handleCftokenRequest(req, res) {
     return handleClearanceRequest(req, res, internalData);
 }
 
+function proxyStringToObject(proxyObj) {
+    if (typeof proxyObj === 'string'){
+        // 如果 proxyObj 是字符串，则转换为对象
+        const proxy = proxyObj.replace('http://', '').split('@');
+        const [host, port] = proxy[1].split(':');
+        const [username, password] = proxy[0].split(':');
+        return {
+            username: username,
+            password: password,
+            host: host,
+            port: parseInt(port)
+        };
+    }
+    // 如果 proxyObj 不是字符串，则直接返回
+    return proxyObj;
+}
+
 // 处理 cfcookie 请求
 async function handleCfcookieRequest(req, res) {
     const data = req.body;
@@ -256,12 +273,16 @@ async function handleCfcookieRequest(req, res) {
             cf_clearance: null 
         });
     }
+    if (!data.proxy && data.proxyString) {
+        data.proxy = proxyStringToObject(data.proxyString);
+    }
 
     // 转换为内部格式
     const internalData = {
         url: data.websiteUrl,
         mode: 'cfcookie',
-        authToken: data.authToken
+        authToken: data.authToken,
+        proxy: data.proxy
     };
 
     // 处理请求
@@ -351,6 +372,9 @@ async function handleRecaptchaV3Request(req, res) {
 // 保留原始API格式支持 (向后兼容)
 app.post('/cf-clearance-scraper', async (req, res) => {
     const data = req.body
+    if (!data.proxy && data.proxyString) {
+        data.proxy = proxyStringToObject(data.proxyString);
+    }
     return handleClearanceRequest(req, res, data)
 })
 

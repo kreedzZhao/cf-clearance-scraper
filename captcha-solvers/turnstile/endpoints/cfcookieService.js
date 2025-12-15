@@ -44,7 +44,7 @@ async function getCfClearance({ url, proxy }) {
     try {
       // 使用上下文池获取上下文
       if (global.contextPool && typeof global.contextPool.getContext === 'function') {
-        context = await global.contextPool.getContext();
+        context = await global.contextPool.getContext(proxy);
       } else {
         // 回退到直接创建
         context = await global.browser
@@ -60,13 +60,19 @@ async function getCfClearance({ url, proxy }) {
       }
 
       page = await context.newPage();
-      
       if (proxy?.username && proxy?.password) {
         await page.authenticate({
           username: proxy.username,
           password: proxy.password,
         });
       }
+
+      // const ipUrl = "https://ifconfig.me/";
+      // await page.goto(ipUrl,{
+      //   waitUntil: "domcontentloaded",
+      //   timeout: 30000
+      // })
+      // console.log('✅ 访问 ip 页面成功');
 
       console.log(`正在访问: ${url}`);
       
