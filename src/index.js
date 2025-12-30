@@ -76,6 +76,7 @@ const solveTurnstileMin = require('../captcha-solvers/turnstile/endpoints/solveT
 const solveTurnstileMax = require('../captcha-solvers/turnstile/endpoints/solveTurnstile.max')
 const wafSession = require('../captcha-solvers/turnstile/endpoints/wafSession')
 const getCfClearance = require('../captcha-solvers/turnstile/endpoints/cfcookieService')
+const interceptor = require('../captcha-solvers/turnstile/endpoints/interceptor')
 const { solveHcaptcha } = require('./endpoints/captcha')
 const PythonRecaptchaSolver = require('../captcha-solvers/recaptcha/python-recaptcha-solver')
 const RecaptchaV3Solver = require('../captcha-solvers/recaptcha/recaptchav3/index')
@@ -89,7 +90,7 @@ app.post('/', async (req, res) => {
         if (!type) {
             return res.status(400).json({
                 code: 400,
-                message: 'Missing required parameter: type. Supported types: cftoken, hcaptcha, cfcookie, recaptchav2, recaptchav3',
+                message: 'Missing required parameter: type. Supported types: cftoken, hcaptcha, cfcookie, recaptchav2, recaptchav3, interceptor',
                 token: null
             });
         }
@@ -110,10 +111,13 @@ app.post('/', async (req, res) => {
             case 'recaptchav3':
                 return await handleRecaptchaV3Request(req, res);
             
+            case 'interceptor':
+                return await handleInterceptorRequest(req, res);
+            
             default:
                 return res.status(400).json({
                     code: 400,
-                    message: `Unsupported type: ${type}. Supported types: cftoken, hcaptcha, cfcookie, recaptchav2, recaptchav3`,
+                    message: `Unsupported type: ${type}. Supported types: cftoken, hcaptcha, cfcookie, recaptchav2, recaptchav3, interceptor`,
                     token: null
                 });
         }
@@ -369,6 +373,36 @@ async function handleRecaptchaV3Request(req, res) {
     return handleClearanceRequest(req, res, internalData);
 }
 
+// 处理 interceptor 请求
+async function handleInterceptorRequest(req, res) {
+    const data = req.body;
+
+    // 参数验证
+    if (!data.websiteUrl) {
+        return res.status(400).json({ 
+            code: 400, 
+            message: 'websiteUrl is required',
+            data: null 
+        });
+    }
+
+    if (!data.proxy && data.proxyString) {
+        data.proxy = proxyStringToObject(data.proxyString);
+    }
+
+    // 转换为内部格式
+    const internalData = {
+        url: data.websiteUrl,
+        targetUrl: data.targetUrl, // 可选，需要拦截的目标URL
+        mode: 'interceptor',
+        proxy: data.proxy,
+        authToken: data.authToken
+    };
+
+    // 处理请求
+    return handleClearanceRequest(req, res, internalData);
+}
+
 // 保留原始API格式支持 (向后兼容)
 app.post('/cf-clearance-scraper', async (req, res) => {
     const data = req.body
@@ -443,7 +477,7 @@ async function handleClearanceRequest(req, res, data) {
     try {
         switch (data.mode) {
             case "source":
-                result = await getSource(data).then(res => { return { source: res, code: 200 } }).catch(err => { return { code: 500, message: err.message } })
+                result = await getSource(data).then(res => { return { source: res, code: 200 } }).catch(err => { console.error(err); return { code: 500, message: err.message } })
                 break;
             case "turnstile-min":
                 result = await solveTurnstileMin(data).then(res => { return { token: res, code: 200 } }).catch(err => { return { code: 500, message: err.message } })
@@ -462,6 +496,14 @@ async function handleClearanceRequest(req, res, data) {
                 break;
             case "recaptchav3":
                 result = await handleRecaptchaV3Solve(data).catch(err => { return { code: 500, message: err.message } })
+                break;
+            case "interceptor":
+                result = await interceptor(data).then(res => { 
+                    if (res === null) {
+                        return { data: null, code: 200, message: 'No matching response found' };
+                    }
+                    return { data: res, code: 200 };
+                }).catch(err => { return { code: 500, message: err.message } })
                 break;
         }
     } catch (error) {

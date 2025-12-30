@@ -10,7 +10,7 @@ const schema = {
         // 新的参数格式
         "type": {
             "type": "string",
-            "enum": ["cftoken", "cfcookie", "recaptchav2", "recaptchav3"]
+            "enum": ["cftoken", "cfcookie", "recaptchav2", "recaptchav3", "interceptor"]
         },
         "websiteUrl": {
             "type": "string",
@@ -22,7 +22,7 @@ const schema = {
         // 兼容旧的参数格式
         "mode": {
             "type": "string",
-            "enum": ["source", "turnstile-min", "turnstile-max", "waf-session", "cfcookie", "recaptchav2", "recaptchav3"]
+            "enum": ["source", "turnstile-min", "turnstile-max", "waf-session", "cfcookie", "recaptchav2", "recaptchav3", "interceptor"]
         },
         "url": {
             "type": "string",
@@ -59,6 +59,31 @@ const schema = {
         },
         "action": {
             "type": "string"
+        },
+        // interceptor 特有参数
+        "targetUrl": {
+            "type": "string",
+            "format": "uri"
+        },
+        // 页面操作参数（用于 getSource，mode: "source"）
+        "operationType": {
+            "type": "string",
+            "enum": ["INPUT_AND_CLICK"]
+        },
+        "operationConfig": {
+            "type": "object",
+            "properties": {
+                "trackingNumber": {
+                    "type": "string"
+                },
+                "inputXpath": {
+                    "type": "string"
+                },
+                "buttonXpath": {
+                    "type": "string"
+                }
+            },
+            "additionalProperties": false
         }
     },
     "anyOf": [
@@ -88,6 +113,13 @@ const schema = {
             "required": ["type", "websiteUrl", "websiteKey"],
             "properties": {
                 "type": { "const": "recaptchav3" }
+            }
+        },
+        {
+            // 新格式验证 - interceptor
+            "required": ["type", "websiteUrl"],
+            "properties": {
+                "type": { "const": "interceptor" }
             }
         },
         {

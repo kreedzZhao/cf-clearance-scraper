@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node start.js --maxMemoryUsage=4096 --maxConcurrentRequests=60 --contextPoolSize=20",
     "start:dev": "node start.js --browserLimit=10 --maxMemoryUsage=2048 --maxConcurrentRequests=20 --contextPoolSize=10",
-    "start:prod": "node start.js --browserLimit=25 --maxMemoryUsage=6144 --maxConcurrentRequests=80 --contextPoolSize=25",
+    "start:prod": "node start.js --browserLimit=15 --maxMemoryUsage=4096 --maxConcurrentRequests=50 --contextPoolSize=15",
     "start:light": "node start.js --browserLimit=5 --maxMemoryUsage=1024 --maxConcurrentRequests=10 --contextPoolSize=5",
     "test": "node --experimental-vm-modules ./node_modules/.bin/jest --detectOpenHandles --verbose",
     "test:quick": "node tests/quick_test.js",
@@ -45,7 +45,8 @@
     "dotenv": "^16.4.5",
     "express": "^4.21.0",
     "jest": "^29.7.0",
-    "puppeteer-real-browser": "^1.4.0",
-    "supertest": "^7.0.0"
+    "puppeteer-real-browser": "^1.4.4",
+    "supertest": "^7.0.0",
+    "zx": "^8.1.7"
   }
 }
