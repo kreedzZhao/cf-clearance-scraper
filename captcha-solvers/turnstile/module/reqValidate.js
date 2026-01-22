@@ -68,7 +68,7 @@ const schema = {
         // 页面操作参数（用于 getSource，mode: "source"）
         "operationType": {
             "type": "string",
-            "enum": ["INPUT_AND_CLICK"]
+            "enum": ["CLICK", "INPUT_AND_CLICK"]
         },
         "operationConfig": {
             "type": "object",
@@ -79,8 +79,9 @@ const schema = {
                 "inputXpath": {
                     "type": "string"
                 },
-                "buttonXpath": {
-                    "type": "string"
+                "buttonXpathArr": {
+                    "type": "array",
+                    "items": { "type": "string" }
                 }
             },
             "additionalProperties": false
