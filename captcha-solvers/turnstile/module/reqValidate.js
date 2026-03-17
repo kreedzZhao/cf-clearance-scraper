@@ -85,6 +85,12 @@ const schema = {
                 }
             },
             "additionalProperties": false
+        },
+        "targetContent": {
+            "oneOf": [
+                { "type": "string" },
+                { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+            ]
         }
     },
     "anyOf": [

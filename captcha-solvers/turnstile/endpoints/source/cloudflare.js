@@ -1,6 +1,6 @@
 const { executePageOperation } = require("../operations/query.js");
 
-function getCfSource({ url, proxy, operationType, operationConfig }) {
+function getCfSource({ url, proxy, operationType, operationConfig, targetContent  }) {
   return new Promise(async (resolve, reject) => {
     if (!url) return reject("Missing url parameter");
 
@@ -103,23 +103,34 @@ function getCfSource({ url, proxy, operationType, operationConfig }) {
             [200, 302].includes(res.status()) &&
             [url, url + "/"].includes(res.url())
           ) {
-            await page
-              .waitForNavigation({ waitUntil: "load", timeout: 5000 })
-              .catch(() => {});
+            const html = await res.text();
 
-              // 如果提供了操作配置，在获取 HTML 之前执行页面操作
-              if (operationType && operationConfig) {
-                try {
-                  await executePageOperation(page, operationType, operationConfig);
-                } catch (operationError) {
-                  isResolved = true;
-                  clearTimeout(timeoutHandler);
-                  await cleanup();
-                  reject(`Page operation failed: ${operationError.message}`);
-                }
+            // 如果提供了操作配置，在获取 HTML 之前执行页面操作
+            if (operationType && operationConfig) {
+              if (html.includes("could not be found. Please try again!")){
+                isResolved = true;
+                clearTimeout(timeoutHandler);
+                await cleanup();
+                resolve(`Tracking not found`);
               }
 
-            const html = await page.content();
+              try {
+                await executePageOperation(page, operationType, operationConfig);
+              } catch (operationError) {
+                isResolved = true;
+                clearTimeout(timeoutHandler);
+                await cleanup();
+                reject(`Page operation failed: ${operationError.message}`);
+              }
+            }
+            // 检查响应体是否包含不应存在的字符串
+            if (targetContent) {
+              const bodyText = await res.text();
+              const includes = Array.isArray(targetContent) ? targetContent : [targetContent];
+              if (!includes.some(str => bodyText.includes(str))) {
+                return;
+              }
+            }
             // await context.close();
             // isResolved = true;
             // clearInterval(cl);
