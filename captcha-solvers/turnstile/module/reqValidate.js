@@ -68,23 +68,55 @@ const schema = {
         // 页面操作参数（用于 getSource，mode: "source"）
         "operationType": {
             "type": "string",
-            "enum": ["CLICK", "INPUT_AND_CLICK"]
+            "enum": ["CLICK", "INPUT_AND_CLICK", "MULTI_INPUT_AND_CLICK"]
         },
         "operationConfig": {
-            "type": "object",
-            "properties": {
-                "trackingNumber": {
-                    "type": "string"
+            "oneOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "trackingNumber": {
+                            "type": "string"
+                        },
+                        "inputXpath": {
+                            "type": "string"
+                        },
+                        "buttonXpathArr": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        }
+                    },
+                    "additionalProperties": false
                 },
-                "inputXpath": {
-                    "type": "string"
-                },
-                "buttonXpathArr": {
-                    "type": "array",
-                    "items": { "type": "string" }
+                {
+                    "type": "object",
+                    "properties": {
+                        "steps": {
+                            "type": "array",
+                            "minItems": 2,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "inputValue": {
+                                        "type": "string"
+                                    },
+                                    "inputXpath": {
+                                        "type": "string"
+                                    },
+                                    "buttonXpathArr": {
+                                        "type": "array",
+                                        "items": { "type": "string" }
+                                    }
+                                },
+                                "required": ["inputValue", "inputXpath", "buttonXpathArr"],
+                                "additionalProperties": false
+                            }
+                        }
+                    },
+                    "required": ["steps"],
+                    "additionalProperties": false
                 }
-            },
-            "additionalProperties": false
+            ]
         },
         "targetContent": {
             "oneOf": [

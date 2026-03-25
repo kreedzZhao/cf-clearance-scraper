@@ -65,10 +65,16 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
           password: proxy.password,
         });
 
+      const isMultiStepOperation = operationType === 'MULTI_INPUT_AND_CLICK';
+      let operationStarted = false;
+      let operationDone = !isMultiStepOperation; // 单步操作无需等待，多步操作需等操作完成
+
       await page.setRequestInterception(true);
       page.on("request", async (request) => request.continue());
       page.on("response", async (res) => {
         try {
+          if (isResolved) return;
+
           // 429 限频 直接关闭
           if (
             [429].includes(res.status()) &&
@@ -105,35 +111,47 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
           ) {
             const html = await res.text();
 
-            // 如果提供了操作配置，在获取 HTML 之前执行页面操作
-            if (operationType && operationConfig) {
+            // 如果提供了操作配置，且操作尚未开始，执行页面操作
+            if (operationType && operationConfig && !operationStarted) {
+              operationStarted = true;
+
               if (html.includes("could not be found. Please try again!")){
                 isResolved = true;
                 clearTimeout(timeoutHandler);
                 await cleanup();
                 resolve(`Tracking not found`);
+                return;
               }
 
               try {
                 await executePageOperation(page, operationType, operationConfig);
+                operationDone = true;
               } catch (operationError) {
                 isResolved = true;
                 clearTimeout(timeoutHandler);
                 await cleanup();
                 reject(`Page operation failed: ${operationError.message}`);
+                return;
+              }
+
+              if (isMultiStepOperation) {
+                return; // 多步骤操作：不在此响应上 resolve，等待最终响应
               }
             }
-            // 检查响应体是否包含不应存在的字符串
+
+            // 多步骤操作进行中，跳过中间响应
+            if (!operationDone) {
+              return;
+            }
+
+            // 检查响应体是否包含目标内容
             if (targetContent) {
-              const bodyText = await res.text();
               const includes = Array.isArray(targetContent) ? targetContent : [targetContent];
-              if (!includes.some(str => bodyText.includes(str))) {
+              if (!includes.some(str => html.includes(str))) {
                 return;
               }
             }
-            // await context.close();
-            // isResolved = true;
-            // clearInterval(cl);
+
             isResolved = true;
             clearTimeout(timeoutHandler);
             await cleanup();

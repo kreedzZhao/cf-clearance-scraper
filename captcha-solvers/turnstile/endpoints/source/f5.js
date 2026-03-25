@@ -88,7 +88,7 @@ function buildOutput(scripts) {
     return out.join("\n");
 }
 
-function getF5Source({ url, proxy, operationType, operationConfig, maxChallengeRetries = 9 }) {
+function getF5Source({ url, proxy, operationType, operationConfig, maxChallengeRetries = 0 }) {
     return new Promise(async (resolve, reject) => {
         if (!url) return reject("Missing url parameter");
 

@@ -2,6 +2,7 @@
 const PageOperationType = {
     CLICK: 'CLICK',                // 仅点击按钮
   INPUT_AND_CLICK: 'INPUT_AND_CLICK',  // 输入文本到 input 并点击按钮
+  MULTI_INPUT_AND_CLICK: 'MULTI_INPUT_AND_CLICK',  // 多步骤：输入+点击，等待导航，再输入+点击
   // 未来可扩展：CLICK_ONLY, INPUT_ONLY, WAIT, SCROLL 等
 };
 
@@ -83,6 +84,82 @@ async function executeInputAndClick(page, config) {
     }
 }
 
+/**
+ * 执行多步骤输入+点击操作
+ * 每一步：等待 input 出现 → 输入文本 → 点击按钮
+ * 非最后一步会等待页面导航完成后再执行下一步
+ * @param {Object} page - Puppeteer page 对象
+ * @param {Object} config - 操作配置
+ * @param {Array} config.steps - 步骤数组，每项包含 inputValue, inputXpath, buttonXpathArr
+ */
+async function executeMultiInputAndClick(page, config) {
+  const { steps } = config;
+
+  if (!steps || !Array.isArray(steps) || steps.length < 2) {
+    throw new Error('steps array with at least 2 items is required for MULTI_INPUT_AND_CLICK');
+  }
+
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    const { inputValue, inputXpath, buttonXpathArr } = step;
+
+    if (!inputValue) {
+      throw new Error(`Step ${i + 1}: inputValue is required`);
+    }
+    if (!inputXpath) {
+      throw new Error(`Step ${i + 1}: inputXpath is required`);
+    }
+    if (!buttonXpathArr) {
+      throw new Error(`Step ${i + 1}: buttonXpathArr is required`);
+    }
+
+    // 等待 input 元素出现（使用轮询方式）
+    const inputWaitStartTime = Date.now();
+    const inputWaitTimeout = 15000;
+    let inputElement;
+    while (!inputElement && (Date.now() - inputWaitStartTime) < inputWaitTimeout) {
+      inputElement = await page.locator(inputXpath);
+      if (!inputElement) {
+        await page.waitForTimeout(200);
+      }
+    }
+    if (!inputElement) {
+      throw new Error(`Step ${i + 1}: Input element not found within ${inputWaitTimeout}ms: ${inputXpath}`);
+    }
+
+    // 输入文本
+    try {
+      await inputElement.fill(inputValue);
+    } catch (typeError) {
+      throw new Error(`Step ${i + 1}: Failed to fill input: ${typeError.message}`);
+    }
+
+    // 点击按钮
+    for (let btnXpath of buttonXpathArr) {
+      let buttonElement = await page.locator(btnXpath);
+      if (!buttonElement) {
+        continue;
+      }
+
+      try {
+        console.log(`Step ${i + 1}: Clicking button with xpath: ${btnXpath}`);
+        if (i < steps.length - 1) {
+          // 非最后一步：点击后等待页面导航完成
+          await Promise.all([
+            page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }),
+            buttonElement.click()
+          ]);
+        } else {
+          // 最后一步：仅点击，response handler 会捕获最终结果
+          await buttonElement.click();
+        }
+      } catch (clickError) {
+        throw new Error(`Step ${i + 1}: Failed to click button: ${clickError.message}`);
+      }
+    }
+  }
+}
+
 async function executeClick(page, config) {
     const { buttonXpathArr } = config;
     if (!buttonXpathArr) {
@@ -140,6 +217,8 @@ async function executePageOperation(page, operationType, operationConfig) {
     case PageOperationType.CLICK:
       // 仅点击按钮的操作可以复用 INPUT_AND_CLICK 逻辑，传入空的 trackingNumber
       return await executeClick(page, operationConfig);
+    case PageOperationType.MULTI_INPUT_AND_CLICK:
+      return await executeMultiInputAndClick(page, operationConfig);
     // 未来可扩展其他操作类型
     default:
       throw new Error(`Unsupported operation type: ${operationType}`);
