@@ -1,4 +1,4 @@
-const { executePageOperation } = require("../operations/query.js");
+const { executePageOperation, PageOperationEarlyTermination } = require("../operations/query.js");
 
 function getCfSource({ url, proxy, operationType, operationConfig, targetContent  }) {
   return new Promise(async (resolve, reject) => {
@@ -143,6 +143,14 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
                 await executePageOperation(page, operationType, operationConfig);
                 operationDone = true;
               } catch (operationError) {
+                if (operationError instanceof PageOperationEarlyTermination || operationError?.isPageOperationEarlyTermination) {
+                  isResolved = true;
+                  clearTimeout(timeoutHandler);
+                  await cleanup();
+                  resolve(operationError.result);
+                  return;
+                }
+
                 isResolved = true;
                 clearTimeout(timeoutHandler);
                 markContextUnhealthy(`page operation failed: ${operationError.message}`);

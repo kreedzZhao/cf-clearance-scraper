@@ -6,6 +6,194 @@ const PageOperationType = {
   // 未来可扩展：CLICK_ONLY, INPUT_ONLY, WAIT, SCROLL 等
 };
 
+const DEFAULT_POST_CLICK_TIMEOUT = 15000;
+const DEFAULT_POST_CLICK_POLL_INTERVAL = 400;
+
+class PageOperationEarlyTermination extends Error {
+  constructor({ result, reason, matchedCondition }) {
+    super(reason || result || 'Page operation terminated early');
+    this.name = 'PageOperationEarlyTermination';
+    this.result = result || reason || 'Page operation terminated early';
+    this.reason = reason || this.result;
+    this.matchedCondition = matchedCondition || null;
+    this.isPageOperationEarlyTermination = true;
+  }
+}
+
+function normalizeText(value) {
+  return String(value || '')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function isXPathSelector(selector) {
+  if (!selector) {
+    return false;
+  }
+
+  return selector.startsWith('//') || selector.startsWith('xpath=');
+}
+
+function toXPath(selector) {
+  return selector.startsWith('xpath=') ? selector.slice(6) : selector;
+}
+
+async function selectorExists(page, selector) {
+  if (!selector) {
+    return false;
+  }
+
+  try {
+    const xpathSelector = isXPathSelector(selector);
+    const rawSelector = xpathSelector ? toXPath(selector) : selector;
+
+    return await page.evaluate(({ rawSelector, xpathSelector }) => {
+      if (xpathSelector) {
+        return !!document.evaluate(
+          rawSelector,
+          document,
+          null,
+          XPathResult.FIRST_ORDERED_NODE_TYPE,
+          null
+        ).singleNodeValue;
+      }
+
+      return !!document.querySelector(rawSelector);
+    }, {
+      rawSelector,
+      xpathSelector,
+    });
+  } catch (e) {
+    return false;
+  }
+}
+
+async function getPageText(page) {
+  try {
+    const pageText = await page.evaluate(() => {
+      return document.body?.innerText || document.body?.textContent || '';
+    });
+
+    return normalizeText(pageText);
+  } catch (e) {
+    return '';
+  }
+}
+
+function getStopConditionMessage(condition, matchedText) {
+  return condition?.result || condition?.reason || matchedText || 'Page operation terminated early';
+}
+
+async function matchStopCondition(page, stopConditions) {
+  if (!Array.isArray(stopConditions) || stopConditions.length === 0) {
+    return null;
+  }
+
+  const currentUrl = typeof page.url === 'function' ? page.url() : '';
+  const normalizedUrl = normalizeText(currentUrl);
+  const pageText = await getPageText(page);
+
+  for (const condition of stopConditions) {
+    const textIncludes = Array.isArray(condition?.textIncludes) ? condition.textIncludes : [];
+    const selectorArr = Array.isArray(condition?.selectorArr) ? condition.selectorArr : [];
+    const urlIncludes = Array.isArray(condition?.urlIncludes) ? condition.urlIncludes : [];
+
+    const textMatched = textIncludes.length === 0 || textIncludes.every(text =>
+      pageText.includes(normalizeText(text))
+    );
+
+    if (!textMatched) {
+      continue;
+    }
+
+    const urlMatched = urlIncludes.length === 0 || urlIncludes.every(fragment =>
+      normalizedUrl.includes(normalizeText(fragment))
+    );
+
+    if (!urlMatched) {
+      continue;
+    }
+
+    let selectorsMatched = true;
+    for (const selector of selectorArr) {
+      if (!(await selectorExists(page, selector))) {
+        selectorsMatched = false;
+        break;
+      }
+    }
+
+    if (!selectorsMatched) {
+      continue;
+    }
+
+    return {
+      condition,
+      result: getStopConditionMessage(condition, textIncludes[0]),
+    };
+  }
+
+  return null;
+}
+
+async function waitForPostClickState(page, options = {}) {
+  const {
+    nextInputXpath,
+    stopConditions = [],
+    postClickTimeoutMs = DEFAULT_POST_CLICK_TIMEOUT,
+    postClickPollIntervalMs = DEFAULT_POST_CLICK_POLL_INTERVAL,
+  } = options;
+
+  const shouldWaitForNextStep = Boolean(nextInputXpath);
+  const shouldCheckStopConditions = Array.isArray(stopConditions) && stopConditions.length > 0;
+
+  if (!shouldWaitForNextStep && !shouldCheckStopConditions) {
+    return { type: 'continue' };
+  }
+
+  const deadline = Date.now() + postClickTimeoutMs;
+
+  while (Date.now() < deadline) {
+    if (shouldCheckStopConditions) {
+      const matchedStopCondition = await matchStopCondition(page, stopConditions);
+      if (matchedStopCondition) {
+        return {
+          type: 'terminated',
+          ...matchedStopCondition,
+        };
+      }
+    }
+
+    if (shouldWaitForNextStep && await selectorExists(page, nextInputXpath)) {
+      return { type: 'next-step-ready' };
+    }
+
+    await sleep(postClickPollIntervalMs);
+  }
+
+  if (shouldCheckStopConditions) {
+    const matchedStopCondition = await matchStopCondition(page, stopConditions);
+    if (matchedStopCondition) {
+      return {
+        type: 'terminated',
+        ...matchedStopCondition,
+      };
+    }
+  }
+
+  if (shouldWaitForNextStep && await selectorExists(page, nextInputXpath)) {
+    return { type: 'next-step-ready' };
+  }
+
+  return { type: 'timeout' };
+}
+
 /**
  * 执行输入文本并点击按钮的操作
  * @param {Object} page - Puppeteer page 对象
@@ -15,7 +203,7 @@ const PageOperationType = {
  * @param {string} config.buttonXpath - 按钮元素的 xpath
  */
 async function executeInputAndClick(page, config) {
-  const { trackingNumber, inputXpath, buttonXpathArr } = config;
+  const { trackingNumber, inputXpath, buttonXpathArr, stopConditions, postClickTimeoutMs, postClickPollIntervalMs } = config;
   
   if (!trackingNumber) {
     throw new Error('trackingNumber is required for INPUT_AND_CLICK operation');
@@ -34,7 +222,7 @@ async function executeInputAndClick(page, config) {
   while (!inputElement && (Date.now() - inputWaitStartTime) < inputWaitTimeout) {
     inputElement = await page.locator(inputXpath);
     if (!inputElement) {
-      await page.waitForTimeout(200); // 等待 200ms 后重试
+      await sleep(200); // 等待 200ms 后重试
     }
   }
   if (!inputElement) {
@@ -70,17 +258,26 @@ async function executeInputAndClick(page, config) {
         }
         
         // 定位并点击按钮
-        try {
-          console.log(`Clicking button with xpath: ${btnXpath}`);
-            await buttonElement.click();
+    try {
+      console.log(`Clicking button with xpath: ${btnXpath}`);
+      await buttonElement.click();
         } catch (clickError) {
             throw new Error(`Failed to click button element: ${clickError.message}`);
         }
-        
-        // 等待操作完成（给页面一些时间处理点击事件）
-        // await page
-        //             .waitForNavigation({ waitUntil: "load", timeout: 5000 })
-        //             .catch(() => {});
+
+        const postClickState = await waitForPostClickState(page, {
+          stopConditions,
+          postClickTimeoutMs,
+          postClickPollIntervalMs,
+        });
+
+        if (postClickState.type === 'terminated') {
+          throw new PageOperationEarlyTermination({
+            result: postClickState.result,
+            reason: postClickState.result,
+            matchedCondition: postClickState.condition,
+          });
+        }
     }
 }
 
@@ -101,7 +298,7 @@ async function executeMultiInputAndClick(page, config) {
 
   for (let i = 0; i < steps.length; i++) {
     const step = steps[i];
-    const { inputValue, inputXpath, buttonXpathArr } = step;
+    const { inputValue, inputXpath, buttonXpathArr, stopConditions, postClickTimeoutMs, postClickPollIntervalMs } = step;
 
     if (!inputValue) {
       throw new Error(`Step ${i + 1}: inputValue is required`);
@@ -120,7 +317,7 @@ async function executeMultiInputAndClick(page, config) {
     while (!inputElement && (Date.now() - inputWaitStartTime) < inputWaitTimeout) {
       inputElement = await page.locator(inputXpath);
       if (!inputElement) {
-        await page.waitForTimeout(200);
+        await sleep(200);
       }
     }
     if (!inputElement) {
@@ -143,25 +340,40 @@ async function executeMultiInputAndClick(page, config) {
 
       try {
         console.log(`Step ${i + 1}: Clicking button with xpath: ${btnXpath}`);
-        if (i < steps.length - 1) {
-          // 非最后一步：点击后等待页面导航完成
-          await Promise.all([
-            page.waitForNavigation({ waitUntil: "domcontentloaded", timeout: 30000 }),
-            buttonElement.click()
-          ]);
-        } else {
-          // 最后一步：仅点击，response handler 会捕获最终结果
-          await buttonElement.click();
-        }
+        await buttonElement.click();
       } catch (clickError) {
         throw new Error(`Step ${i + 1}: Failed to click button: ${clickError.message}`);
+      }
+
+      const nextInputXpath = i < steps.length - 1 ? steps[i + 1].inputXpath : null;
+      const postClickState = await waitForPostClickState(page, {
+        nextInputXpath,
+        stopConditions,
+        postClickTimeoutMs,
+        postClickPollIntervalMs,
+      });
+
+      if (postClickState.type === 'terminated') {
+        throw new PageOperationEarlyTermination({
+          result: postClickState.result,
+          reason: postClickState.result,
+          matchedCondition: postClickState.condition,
+        });
+      }
+
+      if (postClickState.type === 'timeout' && nextInputXpath) {
+        throw new Error(`Step ${i + 1}: Next step input did not appear within ${postClickTimeoutMs || DEFAULT_POST_CLICK_TIMEOUT}ms`);
+      }
+
+      if (postClickState.type === 'next-step-ready') {
+        break;
       }
     }
   }
 }
 
 async function executeClick(page, config) {
-    const { buttonXpathArr } = config;
+    const { buttonXpathArr, stopConditions, postClickTimeoutMs, postClickPollIntervalMs } = config;
     if (!buttonXpathArr) {
         throw new Error('buttonXpath is required for CLICK operation');
         }
@@ -193,10 +405,20 @@ async function executeClick(page, config) {
         } catch (clickError) {
             throw new Error(`Failed to click button element: ${clickError.message}`);
         }
-        // 等待操作完成（给页面一些时间处理点击事件）
-        await page
-                .waitForNavigation({ waitUntil: "load", timeout: 5000 })
-                .catch(() => {});
+
+        const postClickState = await waitForPostClickState(page, {
+          stopConditions,
+          postClickTimeoutMs,
+          postClickPollIntervalMs,
+        });
+
+        if (postClickState.type === 'terminated') {
+          throw new PageOperationEarlyTermination({
+            result: postClickState.result,
+            reason: postClickState.result,
+            matchedCondition: postClickState.condition,
+          });
+        }
     }
 }
 
@@ -227,5 +449,6 @@ async function executePageOperation(page, operationType, operationConfig) {
 
 module.exports = {
   PageOperationType,
-  executePageOperation
+  executePageOperation,
+  PageOperationEarlyTermination,
 };

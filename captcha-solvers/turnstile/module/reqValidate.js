@@ -4,6 +4,55 @@ const addFormats = require("ajv-formats")
 const ajv = new Ajv()
 addFormats(ajv)
 
+const stopConditionItemSchema = {
+    "type": "object",
+    "properties": {
+        "textIncludes": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+        },
+        "selectorArr": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+        },
+        "urlIncludes": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+        },
+        "result": {
+            "type": "string"
+        },
+        "reason": {
+            "type": "string"
+        }
+    },
+    "anyOf": [
+        { "required": ["textIncludes"] },
+        { "required": ["selectorArr"] },
+        { "required": ["urlIncludes"] }
+    ],
+    "additionalProperties": false
+}
+
+const commonOperationConfigProperties = {
+    "postClickTimeoutMs": {
+        "type": "integer",
+        "minimum": 1000
+    },
+    "postClickPollIntervalMs": {
+        "type": "integer",
+        "minimum": 100
+    },
+    "stopConditions": {
+        "type": "array",
+        "items": stopConditionItemSchema,
+        "minItems": 1
+    }
+}
+
 const schema = {
     "type": "object",
     "properties": {
@@ -84,7 +133,8 @@ const schema = {
                         "buttonXpathArr": {
                             "type": "array",
                             "items": { "type": "string" }
-                        }
+                        },
+                        ...commonOperationConfigProperties
                     },
                     "additionalProperties": false
                 },
@@ -106,7 +156,8 @@ const schema = {
                                     "buttonXpathArr": {
                                         "type": "array",
                                         "items": { "type": "string" }
-                                    }
+                                    },
+                                    ...commonOperationConfigProperties
                                 },
                                 "required": ["inputValue", "inputXpath", "buttonXpathArr"],
                                 "additionalProperties": false

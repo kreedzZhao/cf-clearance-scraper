@@ -1,4 +1,8 @@
-const { executePageOperation } = require("../operations/query");
+const { executePageOperation, PageOperationEarlyTermination } = require("../operations/query");
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
 function getHcapSource({ url, proxy, operationType, operationConfig }) {
   return new Promise(async (resolve, reject) => {
@@ -209,6 +213,14 @@ function getHcapSource({ url, proxy, operationType, operationConfig }) {
                   },
                 );
               } catch (operationError) {
+                if (operationError instanceof PageOperationEarlyTermination || operationError?.isPageOperationEarlyTermination) {
+                  isResolved = true;
+                  clearTimeout(timeoutHandler);
+                  await cleanup();
+                  resolve(operationError.result);
+                  return;
+                }
+
                 isResolved = true;
                 clearTimeout(timeoutHandler);
                 markContextUnhealthy(`page operation failed: ${operationError.message}`);
@@ -260,7 +272,7 @@ function getHcapSource({ url, proxy, operationType, operationConfig }) {
           if (queryButton) {
             console.log('click query button');
             await queryButton.click();
-            await page.waitForTimeout(3000); // 等待 3 秒
+            await sleep(3000); // 等待 3 秒
           }
         } catch (e) {
           break;
