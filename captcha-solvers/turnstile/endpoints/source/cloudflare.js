@@ -8,6 +8,15 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
     let page = null;
     let isResolved = false;
     let contextClosed = false;
+    let shouldReuseContext = true;
+    let discardReason = "";
+
+    const markContextUnhealthy = (reason) => {
+      shouldReuseContext = false;
+      if (!discardReason) {
+        discardReason = reason;
+      }
+    };
     
     const cleanup = async () => {
       if (page) {
@@ -20,7 +29,10 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
           contextClosed = true;
           // 使用上下文池释放上下文
           if (global.contextPool && typeof global.contextPool.releaseContext === 'function') {
-            await global.contextPool.releaseContext(context);
+            await global.contextPool.releaseContext(context, {
+              forceClose: !shouldReuseContext,
+              reason: discardReason || undefined,
+            });
           } else {
             // 回退到直接关闭
             await context.close();
@@ -34,6 +46,7 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
     const timeoutHandler = setTimeout(async () => {
       if (!isResolved) {
         isResolved = true;
+        markContextUnhealthy("cloudflare source timeout");
         await cleanup();
         reject("Timeout Error - cf_clearance cookie not obtained");
       }
@@ -84,6 +97,7 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
             await page.deleteCookie(...cookies);
             isResolved = true;
             clearTimeout(timeoutHandler);
+            markContextUnhealthy("rate limit exceeded");
             await cleanup();
             resolve("Rate Limit Exceeded");
             return;
@@ -100,6 +114,7 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
           ) {
             isResolved = true;
             clearTimeout(timeoutHandler);
+            markContextUnhealthy("completely forbidden");
             await cleanup();
             resolve("Completely Forbidden");
             return;
@@ -118,6 +133,7 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
               if (html.includes("could not be found. Please try again!")){
                 isResolved = true;
                 clearTimeout(timeoutHandler);
+                markContextUnhealthy("tracking not found");
                 await cleanup();
                 resolve(`Tracking not found`);
                 return;
@@ -129,6 +145,7 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
               } catch (operationError) {
                 isResolved = true;
                 clearTimeout(timeoutHandler);
+                markContextUnhealthy(`page operation failed: ${operationError.message}`);
                 await cleanup();
                 reject(`Page operation failed: ${operationError.message}`);
                 return;
@@ -169,6 +186,7 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
         if (!isResolved) {
           isResolved = true;
           clearTimeout(timeoutHandler);
+          markContextUnhealthy("cloudflare page operation timeout");
           await cleanup();
           reject("Timeout Error - page operation not completed");
         }
@@ -177,6 +195,7 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
       if (!isResolved) {
         isResolved = true;
         clearTimeout(timeoutHandler);
+        markContextUnhealthy(e.message || "cloudflare source failed");
         await cleanup();
         reject(e.message || 'Unknown error while getting source info');
       }

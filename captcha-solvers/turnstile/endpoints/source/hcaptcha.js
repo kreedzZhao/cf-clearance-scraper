@@ -8,6 +8,15 @@ function getHcapSource({ url, proxy, operationType, operationConfig }) {
     let page = null;
     let isResolved = false;
     let contextClosed = false;
+    let shouldReuseContext = true;
+    let discardReason = "";
+
+    const markContextUnhealthy = (reason) => {
+      shouldReuseContext = false;
+      if (!discardReason) {
+        discardReason = reason;
+      }
+    };
 
     const cleanup = async () => {
       if (page) {
@@ -23,7 +32,10 @@ function getHcapSource({ url, proxy, operationType, operationConfig }) {
             global.contextPool &&
             typeof global.contextPool.releaseContext === "function"
           ) {
-            await global.contextPool.releaseContext(context);
+            await global.contextPool.releaseContext(context, {
+              forceClose: !shouldReuseContext,
+              reason: discardReason || undefined,
+            });
           } else {
             // 回退到直接关闭
             await context.close();
@@ -37,6 +49,7 @@ function getHcapSource({ url, proxy, operationType, operationConfig }) {
     const timeoutHandler = setTimeout(async () => {
       if (!isResolved) {
         isResolved = true;
+        markContextUnhealthy("hcaptcha source timeout");
         await cleanup();
         reject("Timeout Error - cf_clearance cookie not obtained");
       }
@@ -108,6 +121,7 @@ function getHcapSource({ url, proxy, operationType, operationConfig }) {
             await page.deleteCookie(...cookies);
             isResolved = true;
             clearTimeout(timeoutHandler);
+            markContextUnhealthy("rate limit exceeded");
             await cleanup();
             resolve("Rate Limit Exceeded");
             return;
@@ -124,6 +138,7 @@ function getHcapSource({ url, proxy, operationType, operationConfig }) {
           ) {
             isResolved = true;
             clearTimeout(timeoutHandler);
+            markContextUnhealthy("completely forbidden");
             await cleanup();
             resolve("Completely Forbidden");
             return;
@@ -165,6 +180,7 @@ function getHcapSource({ url, proxy, operationType, operationConfig }) {
             if (res.status() !== 200) {
               isResolved = true;
               clearTimeout(timeoutHandler);
+              markContextUnhealthy(`hcaptcha summary status ${res.status()}`);
               await cleanup();
               reject(`Failed to get hcaptcha source info, status code: ${res.status()}`);
             }
@@ -195,6 +211,7 @@ function getHcapSource({ url, proxy, operationType, operationConfig }) {
               } catch (operationError) {
                 isResolved = true;
                 clearTimeout(timeoutHandler);
+                markContextUnhealthy(`page operation failed: ${operationError.message}`);
                 await cleanup();
                 reject(`Page operation failed: ${operationError.message}`);
               }
@@ -208,6 +225,7 @@ function getHcapSource({ url, proxy, operationType, operationConfig }) {
             if (res.status() !== 200) {
               isResolved = true;
               clearTimeout(timeoutHandler);
+              markContextUnhealthy(`hcaptcha events status ${res.status()}`);
               await cleanup();
               reject(`Failed to get hcaptcha source info, status code: ${res.status()}`);
             }
@@ -254,6 +272,7 @@ function getHcapSource({ url, proxy, operationType, operationConfig }) {
         if (!isResolved) {
           isResolved = true;
           clearTimeout(timeoutHandler);
+          markContextUnhealthy("hcaptcha page operation timeout");
           await cleanup();
           reject("Timeout Error - page operation not completed");
         }
@@ -262,6 +281,7 @@ function getHcapSource({ url, proxy, operationType, operationConfig }) {
       if (!isResolved) {
         isResolved = true;
         clearTimeout(timeoutHandler);
+        markContextUnhealthy(e.message || "hcaptcha source failed");
         await cleanup();
         reject(e.message || "Unknown error while getting source info");
       }

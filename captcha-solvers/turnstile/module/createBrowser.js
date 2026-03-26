@@ -19,186 +19,369 @@ async function createBrowser(options = {}) {
         global.browser = null
         global.browserContexts = new Set()
         global.contextPool = {
-            available: [],
+            available: new Map(),
             maxSize: Number(process.env.CONTEXT_POOL_SIZE) || 20,
             used: 0,
             waitingQueue: [], // 等待队列
             contextUsage: new Map(), // 跟踪每个上下文的使用次数
-            
-            async getContext(proxy) {
-                // 如果有可用的上下文，选择使用次数最少的
-                if (this.available.length > 0) {
-                    // 按使用次数排序，选择最少使用的
-                    this.available.sort((a, b) => 
-                        (this.contextUsage.get(a) || 0) - (this.contextUsage.get(b) || 0)
-                    );
-                    
-                    const context = this.available.shift();
-                    this.used++;
-                    
-                    // 增加使用计数
-                    const usage = this.contextUsage.get(context) || 0;
-                    this.contextUsage.set(context, usage + 1);
-                    
-                    console.log(`🔄 Reusing context (usage: ${usage + 1}, ${this.used} active, ${this.available.length} available)`);
-                    return context;
+            contextMeta: new WeakMap(),
+            directProxyKey: "__direct__",
+
+            normalizeProxy(proxy) {
+                if (!proxy || !proxy.host || !proxy.port) {
+                    return null
                 }
-                
-                // 如果没有可用上下文且未达到最大限制，创建新的
-                if ((this.used + this.available.length) < this.maxSize) {
-                    try {
-                        let context = null;
-                        if (proxy) {
-                            context = await global.browser.createBrowserContext({
-                                // 优化上下文设置，减少资源占用
-                                ignoreHTTPSErrors: true,
-                                proxyServer: `http://${proxy.host}:${proxy.port}`,
-                            });
-                        } else {    
-                            context = await global.browser.createBrowserContext({
-                                // 优化上下文设置，减少资源占用
-                                ignoreHTTPSErrors: true,
-                            });
+
+                return {
+                    host: String(proxy.host),
+                    port: String(proxy.port),
+                    username: proxy.username ? String(proxy.username) : "",
+                    password: proxy.password ? String(proxy.password) : "",
+                }
+            },
+
+            getProxyKey(proxy) {
+                const normalizedProxy = this.normalizeProxy(proxy)
+                if (!normalizedProxy) {
+                    return this.directProxyKey
+                }
+                return JSON.stringify(normalizedProxy)
+            },
+
+            getProxyLabel(proxy) {
+                const normalizedProxy = this.normalizeProxy(proxy)
+                if (!normalizedProxy) {
+                    return "direct"
+                }
+
+                const authLabel = normalizedProxy.username ? `@${normalizedProxy.username}` : ""
+                return `${normalizedProxy.host}:${normalizedProxy.port}${authLabel}`
+            },
+
+            getContextMeta(context) {
+                return this.contextMeta.get(context) || {
+                    proxy: null,
+                    proxyKey: this.directProxyKey,
+                }
+            },
+
+            setContextMeta(context, proxy) {
+                const normalizedProxy = this.normalizeProxy(proxy)
+                const meta = {
+                    proxy: normalizedProxy,
+                    proxyKey: this.getProxyKey(normalizedProxy),
+                }
+
+                this.contextMeta.set(context, meta)
+                return meta
+            },
+
+            getBucket(proxyKey) {
+                if (!this.available.has(proxyKey)) {
+                    this.available.set(proxyKey, [])
+                }
+
+                return this.available.get(proxyKey)
+            },
+
+            getAvailableCount() {
+                let count = 0
+                for (const bucket of this.available.values()) {
+                    count += bucket.length
+                }
+                return count
+            },
+
+            getTotalContexts() {
+                return this.used + this.getAvailableCount()
+            },
+
+            takeLeastUsedFromBucket(bucket) {
+                if (!bucket || bucket.length === 0) {
+                    return null
+                }
+
+                bucket.sort((a, b) =>
+                    (this.contextUsage.get(a) || 0) - (this.contextUsage.get(b) || 0)
+                )
+
+                return bucket.shift()
+            },
+
+            takeMatchingAvailableContext(proxyKey) {
+                return this.takeLeastUsedFromBucket(this.getBucket(proxyKey))
+            },
+
+            takeEvictableContext(targetProxyKey) {
+                let candidate = null
+
+                for (const [proxyKey, bucket] of this.available.entries()) {
+                    if (proxyKey === targetProxyKey || bucket.length === 0) {
+                        continue
+                    }
+
+                    for (const context of bucket) {
+                        const usage = this.contextUsage.get(context) || 0
+                        if (!candidate || usage < candidate.usage) {
+                            candidate = { context, usage, proxyKey }
                         }
-                        
-                        this.used++;
-                        this.contextUsage.set(context, 1);
-                        console.log(`🆕 Created new context (${this.used} active, ${this.available.length} available, total: ${this.used + this.available.length})`);
-                        return context;
-                    } catch (e) {
-                        console.error("Failed to create browser context:", e.message);
-                        return null;
                     }
                 }
-                
-                // 达到最大限制，等待可用上下文
-                console.log(`⏳ Context pool full, waiting for available context (${this.used} active, ${this.waitingQueue.length} waiting)`);
+
+                if (!candidate) {
+                    return null
+                }
+
+                const bucket = this.available.get(candidate.proxyKey)
+                if (bucket) {
+                    const index = bucket.indexOf(candidate.context)
+                    if (index !== -1) {
+                        bucket.splice(index, 1)
+                    }
+                    if (bucket.length === 0) {
+                        this.available.delete(candidate.proxyKey)
+                    }
+                }
+
+                return candidate.context
+            },
+
+            async createFreshContext(proxy) {
+                try {
+                    const normalizedProxy = this.normalizeProxy(proxy)
+                    const contextOptions = {
+                        ignoreHTTPSErrors: true,
+                    }
+
+                    if (normalizedProxy) {
+                        contextOptions.proxyServer = `http://${normalizedProxy.host}:${normalizedProxy.port}`
+                    }
+
+                    const context = await global.browser.createBrowserContext(contextOptions)
+                    this.used++
+                    this.contextUsage.set(context, 1)
+
+                    const meta = this.setContextMeta(context, normalizedProxy)
+                    console.log(
+                        `🆕 Created new ${this.getProxyLabel(meta.proxy)} context (${this.used} active, ${this.getAvailableCount()} available, total: ${this.getTotalContexts()})`
+                    )
+
+                    return context
+                } catch (e) {
+                    console.error("Failed to create browser context:", e.message)
+                    return null
+                }
+            },
+
+            async resetContext(context) {
+                const pages = await context.pages()
+                await Promise.all(pages.map(async page => {
+                    try {
+                        await page.evaluate(async () => {
+                            try {
+                                localStorage.clear()
+                                sessionStorage.clear()
+                            } catch (_) {}
+
+                            try {
+                                if (indexedDB && typeof indexedDB.databases === "function") {
+                                    const databases = await indexedDB.databases()
+                                    await Promise.all(
+                                        databases
+                                            .filter(database => database && database.name)
+                                            .map(database => indexedDB.deleteDatabase(database.name))
+                                    )
+                                }
+                            } catch (_) {}
+                        }).catch(() => {})
+                    } catch (e) {}
+
+                    await page.close().catch(() => {})
+                }))
+
+                if (typeof context.clearCookies === "function") {
+                    await context.clearCookies().catch(() => {})
+                }
+
+                if (typeof context.clearPermissions === "function") {
+                    await context.clearPermissions().catch(() => {})
+                }
+            },
+
+            async disposeContext(context, reason = "") {
+                if (!context) return
+
+                const meta = this.getContextMeta(context)
+                const bucket = this.available.get(meta.proxyKey)
+                if (bucket) {
+                    const index = bucket.indexOf(context)
+                    if (index !== -1) {
+                        bucket.splice(index, 1)
+                    }
+                    if (bucket.length === 0) {
+                        this.available.delete(meta.proxyKey)
+                    }
+                }
+
+                this.contextUsage.delete(context)
+                this.contextMeta.delete(context)
+
+                try {
+                    await context.close()
+                    console.log(`🗑️  Closed ${this.getProxyLabel(meta.proxy)} context${reason ? ` (${reason})` : ""}`)
+                } catch (e) {
+                    console.error("Error closing context:", e.message)
+                }
+            },
+
+            async getContext(proxy) {
+                const normalizedProxy = this.normalizeProxy(proxy)
+                const proxyKey = this.getProxyKey(normalizedProxy)
+                const proxyLabel = this.getProxyLabel(normalizedProxy)
+
+                const availableContext = this.takeMatchingAvailableContext(proxyKey)
+                if (availableContext) {
+                    this.used++
+
+                    const usage = (this.contextUsage.get(availableContext) || 0) + 1
+                    this.contextUsage.set(availableContext, usage)
+
+                    console.log(
+                        `🔄 Reusing ${proxyLabel} context (usage: ${usage}, ${this.used} active, ${this.getAvailableCount()} available)`
+                    )
+                    return availableContext
+                }
+
+                if (this.getTotalContexts() < this.maxSize) {
+                    return await this.createFreshContext(normalizedProxy)
+                }
+
+                const evictableContext = this.takeEvictableContext(proxyKey)
+                if (evictableContext) {
+                    await this.disposeContext(evictableContext, `evicted for ${proxyLabel}`)
+                    return await this.createFreshContext(normalizedProxy)
+                }
+
+                console.log(
+                    `⏳ Context pool full, waiting for ${proxyLabel} context (${this.used} active, ${this.waitingQueue.length} waiting)`
+                )
+
                 return new Promise((resolve, reject) => {
-                    let isResolved = false;
-                    
+                    let isResolved = false
+
                     const wrappedResolve = (value) => {
                         if (!isResolved) {
-                            isResolved = true;
-                            resolve(value);
+                            isResolved = true
+                            resolve(value)
                         }
-                    };
-                    
+                    }
+
                     const wrappedReject = (error) => {
                         if (!isResolved) {
-                            isResolved = true;
-                            reject(error);
+                            isResolved = true
+                            reject(error)
                         }
-                    };
-                    
+                    }
+
                     const timeout = setTimeout(() => {
                         if (!isResolved) {
-                            const index = this.waitingQueue.findIndex(item => item.wrappedResolve === wrappedResolve);
+                            const index = this.waitingQueue.findIndex(item => item.wrappedResolve === wrappedResolve)
                             if (index !== -1) {
-                                this.waitingQueue.splice(index, 1);
+                                this.waitingQueue.splice(index, 1)
                             }
-                            wrappedReject(new Error('Context pool timeout'));
+                            wrappedReject(new Error(`Context pool timeout for ${proxyLabel}`))
                         }
-                    }, 30000); // 30秒超时
-                    
-                    this.waitingQueue.push({ 
-                        resolve: wrappedResolve, 
-                        reject: wrappedReject, 
+                    }, 30000)
+
+                    this.waitingQueue.push({
+                        proxyKey,
+                        resolve: wrappedResolve,
+                        reject: wrappedReject,
                         timeout,
                         wrappedResolve,
-                        wrappedReject
-                    });
-                });
+                        wrappedReject,
+                    })
+                })
             },
-            
-            async releaseContext(context) {
-                if (!context) return;
-                
-                this.used = Math.max(0, this.used - 1);
-                
-                // 检查是否有等待的请求
-                if (this.waitingQueue.length > 0) {
-                    const waitingRequest = this.waitingQueue.shift();
-                    
-                    try {
-                        // 清理超时定时器，防止内存泄漏
-                        if (waitingRequest.timeout) {
-                            clearTimeout(waitingRequest.timeout);
-                        }
-                        
-                        // 清理页面但保留上下文给等待的请求
-                        const pages = await context.pages();
-                        await Promise.all(pages.map(page => page.close().catch(() => {})));
-                        
-                        this.used++;
-                        const usage = this.contextUsage.get(context) || 0;
-                        this.contextUsage.set(context, usage + 1);
-                        
-                        console.log(`🚀 Context passed to waiting request (${this.used} active, ${this.waitingQueue.length} waiting)`);
-                        waitingRequest.resolve(context);
-                        return;
-                    } catch (e) {
-                        console.error("Error transferring context to waiting request:", e.message);
-                        // 失败的话，拒绝等待的请求
-                        waitingRequest.reject(new Error('Context transfer failed: ' + e.message));
-                    }
+
+            async releaseContext(context, options = {}) {
+                if (!context) return
+
+                const { forceClose = false, reason = "" } = options
+                const meta = this.getContextMeta(context)
+                const proxyLabel = this.getProxyLabel(meta.proxy)
+
+                this.used = Math.max(0, this.used - 1)
+
+                if (forceClose) {
+                    await this.disposeContext(context, reason || `discarded after ${proxyLabel} request`)
+                    return
                 }
-                
-                // 检查上下文是否过度使用，如果是则替换
-                const usage = this.contextUsage.get(context) || 0;
-                if (usage > 100) { // 使用超过100次就替换
-                    try {
-                        this.contextUsage.delete(context);
-                        await context.close();
-                        console.log(`🔄 Context recycled due to high usage (${usage} uses)`);
-                        
-                        // 创建新的上下文补充池子
-                        if (this.available.length < Math.floor(this.maxSize / 2)) {
-                            const newContext = await global.browser.createBrowserContext({
-                                ignoreHTTPSErrors: true,
-                            });
-                            this.contextUsage.set(newContext, 0);
-                            this.available.push(newContext);
-                            console.log(`🆕 New context created to replace recycled one`);
-                        }
-                        return;
-                    } catch (e) {
-                        console.error("Error recycling context:", e.message);
-                    }
+
+                const usage = this.contextUsage.get(context) || 0
+                if (usage > 100) {
+                    await this.disposeContext(context, `recycled after ${usage} uses`)
+                    return
                 }
-                
-                // 正常情况下，返回到池子
+
                 try {
-                    // 清理页面但保留上下文
-                    const pages = await context.pages();
-                    await Promise.all(pages.map(page => page.close().catch(() => {})));
-                    
-                    this.available.push(context);
-                    console.log(`♻️  Context returned to pool (usage: ${usage}, ${this.used} active, ${this.available.length} available)`);
+                    await this.resetContext(context)
                 } catch (e) {
-                    console.error("Error cleaning context for reuse:", e.message);
-                    // 清理失败，关闭上下文
-                    try {
-                        this.contextUsage.delete(context);
-                        await context.close();
-                        console.log(`🗑️  Context closed due to cleanup failure`);
-                    } catch (closeError) {
-                        console.error("Error closing context:", closeError.message);
-                    }
+                    console.error("Error cleaning context for reuse:", e.message)
+                    await this.disposeContext(context, `cleanup failure: ${e.message}`)
+                    return
                 }
+
+                const waitingIndex = this.waitingQueue.findIndex(item => item.proxyKey === meta.proxyKey)
+                if (waitingIndex !== -1) {
+                    const waitingRequest = this.waitingQueue.splice(waitingIndex, 1)[0]
+
+                    if (waitingRequest.timeout) {
+                        clearTimeout(waitingRequest.timeout)
+                    }
+
+                    this.used++
+                    const nextUsage = (this.contextUsage.get(context) || 0) + 1
+                    this.contextUsage.set(context, nextUsage)
+
+                    console.log(
+                        `🚀 Context passed to waiting ${proxyLabel} request (${this.used} active, ${this.waitingQueue.length} waiting)`
+                    )
+                    waitingRequest.resolve(context)
+                    return
+                }
+
+                this.getBucket(meta.proxyKey).push(context)
+                console.log(
+                    `♻️  ${proxyLabel} context returned to pool (usage: ${usage}, ${this.used} active, ${this.getAvailableCount()} available)`
+                )
             },
-            
+
             async cleanup() {
-                // 清理所有池中的上下文
-                while (this.available.length > 0) {
-                    const context = this.available.pop();
-                    try {
-                        await context.close();
-                    } catch (e) {
-                        console.error("Error closing pooled context:", e.message);
+                for (const waitingRequest of this.waitingQueue) {
+                    if (waitingRequest.timeout) {
+                        clearTimeout(waitingRequest.timeout)
+                    }
+                    waitingRequest.reject(new Error("Context pool cleaned up"))
+                }
+                this.waitingQueue = []
+
+                for (const bucket of this.available.values()) {
+                    while (bucket.length > 0) {
+                        const context = bucket.pop()
+                        try {
+                            await context.close()
+                        } catch (e) {
+                            console.error("Error closing pooled context:", e.message)
+                        }
                     }
                 }
-                this.used = 0;
-                console.log('🧹 Context pool cleaned up');
+
+                this.available.clear()
+                this.contextUsage.clear()
+                this.contextMeta = new WeakMap()
+                this.used = 0
+                console.log('🧹 Context pool cleaned up')
             }
         }
 

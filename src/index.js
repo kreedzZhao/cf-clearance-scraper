@@ -174,14 +174,30 @@ async function handleRecaptchaV2Solve(data) {
 // 处理 reCAPTCHA v3 求解
 async function handleRecaptchaV3Solve(data) {
     let context = null;
+    let shouldReuseContext = true;
+    let discardReason = '';
+
+    const markContextUnhealthy = (reason) => {
+        shouldReuseContext = false;
+        if (!discardReason) {
+            discardReason = reason;
+        }
+    };
+
     try {
         console.log('🚀 获取 reCAPTCHA v3 浏览器上下文...');
-        context = await global.contextPool.getContext();
+        context = await global.contextPool.getContext(data.proxy);
         const page = await context.newPage();
         
         // 设置代理（如果提供）
         if (data.proxy) {
             console.log(`🌐 使用代理: ${data.proxy}`);
+            if (data.proxy.username && data.proxy.password) {
+                await page.authenticate({
+                    username: data.proxy.username,
+                    password: data.proxy.password,
+                });
+            }
         }
         
         // 创建 reCAPTCHA v3 解决器并在导航前初始化
@@ -202,12 +218,16 @@ async function handleRecaptchaV3Solve(data) {
         return { token: result.token, code: 200, score: result.score, solveTime: result.solveTime };
         
     } catch (error) {
+        markContextUnhealthy(error.message || 'reCAPTCHA v3 solve failed');
         console.error('❌ reCAPTCHA v3 解决失败:', error.message);
         throw error;
     } finally {
         if (context) {
             try {
-                await global.contextPool.releaseContext(context);
+                await global.contextPool.releaseContext(context, {
+                    forceClose: !shouldReuseContext,
+                    reason: discardReason || undefined,
+                });
             } catch (e) {
                 console.warn('释放浏览器上下文时出现警告:', e.message);
             }

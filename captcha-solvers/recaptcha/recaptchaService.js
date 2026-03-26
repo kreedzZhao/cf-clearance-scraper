@@ -30,6 +30,15 @@ class RecaptchaService {
       let page = null;
       let isResolved = false;
       let contextClosed = false;
+      let shouldReuseContext = true;
+      let discardReason = '';
+
+      const markContextUnhealthy = (reason) => {
+        shouldReuseContext = false;
+        if (!discardReason) {
+          discardReason = reason;
+        }
+      };
 
       const cleanup = async () => {
         if (page) {
@@ -41,7 +50,10 @@ class RecaptchaService {
           try {
             contextClosed = true;
             if (global.contextPool && typeof global.contextPool.releaseContext === 'function') {
-              await global.contextPool.releaseContext(context);
+              await global.contextPool.releaseContext(context, {
+                forceClose: !shouldReuseContext,
+                reason: discardReason || undefined,
+              });
             } else {
               await context.close();
             }
@@ -54,6 +66,7 @@ class RecaptchaService {
       const timeoutHandler = setTimeout(async () => {
         if (!isResolved) {
           isResolved = true;
+          markContextUnhealthy('reCAPTCHA v2 timeout');
           await cleanup();
           reject("Timeout Error - reCAPTCHA not solved");
         }
@@ -62,7 +75,7 @@ class RecaptchaService {
       try {
         // 获取浏览器上下文
         if (global.contextPool && typeof global.contextPool.getContext === 'function') {
-          context = await global.contextPool.getContext();
+          context = await global.contextPool.getContext(proxy);
         } else {
           context = await global.browser
             .createBrowserContext({
@@ -182,6 +195,7 @@ class RecaptchaService {
         if (!isResolved) {
           isResolved = true;
           clearTimeout(timeoutHandler);
+          markContextUnhealthy(e.message || 'reCAPTCHA v2 failed');
           await cleanup();
           reject(e.message || 'Unknown error while solving reCAPTCHA v2');
         }
@@ -201,6 +215,15 @@ class RecaptchaService {
       let page = null;
       let isResolved = false;
       let contextClosed = false;
+      let shouldReuseContext = true;
+      let discardReason = '';
+
+      const markContextUnhealthy = (reason) => {
+        shouldReuseContext = false;
+        if (!discardReason) {
+          discardReason = reason;
+        }
+      };
 
       const cleanup = async () => {
         if (page) {
@@ -212,7 +235,10 @@ class RecaptchaService {
           try {
             contextClosed = true;
             if (global.contextPool && typeof global.contextPool.releaseContext === 'function') {
-              await global.contextPool.releaseContext(context);
+              await global.contextPool.releaseContext(context, {
+                forceClose: !shouldReuseContext,
+                reason: discardReason || undefined,
+              });
             } else {
               await context.close();
             }
@@ -225,6 +251,7 @@ class RecaptchaService {
       const timeoutHandler = setTimeout(async () => {
         if (!isResolved) {
           isResolved = true;
+          markContextUnhealthy('reCAPTCHA v3 timeout');
           await cleanup();
           reject("Timeout Error - reCAPTCHA v3 not solved");
         }
@@ -233,7 +260,7 @@ class RecaptchaService {
       try {
         // 获取浏览器上下文
         if (global.contextPool && typeof global.contextPool.getContext === 'function') {
-          context = await global.contextPool.getContext();
+          context = await global.contextPool.getContext(proxy);
         } else {
           context = await global.browser
             .createBrowserContext({
@@ -313,6 +340,7 @@ class RecaptchaService {
         if (!isResolved) {
           isResolved = true;
           clearTimeout(timeoutHandler);
+          markContextUnhealthy(e.message || 'reCAPTCHA v3 failed');
           await cleanup();
           reject(e.message || 'Unknown error while solving reCAPTCHA v3');
         }

@@ -96,6 +96,15 @@ function getF5Source({ url, proxy, operationType, operationConfig, maxChallengeR
         let page = null;
         let isResolved = false;
         let contextClosed = false;
+        let shouldReuseContext = true;
+        let discardReason = "";
+
+        const markContextUnhealthy = (reason) => {
+            shouldReuseContext = false;
+            if (!discardReason) {
+                discardReason = reason;
+            }
+        };
 
         const cleanup = async () => {
             if (page) {
@@ -111,7 +120,10 @@ function getF5Source({ url, proxy, operationType, operationConfig, maxChallengeR
                         global.contextPool &&
                         typeof global.contextPool.releaseContext === "function"
                     ) {
-                        await global.contextPool.releaseContext(context);
+                        await global.contextPool.releaseContext(context, {
+                            forceClose: !shouldReuseContext,
+                            reason: discardReason || undefined,
+                        });
                     } else {
                         // 回退到直接关闭
                         await context.close();
@@ -125,6 +137,7 @@ function getF5Source({ url, proxy, operationType, operationConfig, maxChallengeR
         const timeoutHandler = setTimeout(async () => {
             if (!isResolved) {
                 isResolved = true;
+                markContextUnhealthy("f5 source timeout");
                 await cleanup();
                 reject("Timeout Error - cf_clearance cookie not obtained");
             }
@@ -189,6 +202,7 @@ function getF5Source({ url, proxy, operationType, operationConfig, maxChallengeR
 
                         isResolved = true;
                         clearTimeout(timeoutHandler);
+                        markContextUnhealthy("f5 outage apology page");
                         await cleanup();
                         resolve("Accessed an outage apology page");
                     }
@@ -207,6 +221,7 @@ function getF5Source({ url, proxy, operationType, operationConfig, maxChallengeR
                             // blocked by f5, but not challenge page, just resolve with empty content
                             isResolved = true;
                             clearTimeout(timeoutHandler);
+                            markContextUnhealthy("blocked by F5 without challenge");
                             await cleanup();
                             resolve("Blocked by F5 without challenge");
                         }
@@ -233,6 +248,7 @@ function getF5Source({ url, proxy, operationType, operationConfig, maxChallengeR
                 if (!isResolved) {
                     isResolved = true;
                     clearTimeout(timeoutHandler);
+                    markContextUnhealthy("f5 page operation timeout");
                     await cleanup();
                     reject("Timeout Error - page operation not completed");
                 }
@@ -241,6 +257,7 @@ function getF5Source({ url, proxy, operationType, operationConfig, maxChallengeR
             if (!isResolved) {
                 isResolved = true;
                 clearTimeout(timeoutHandler);
+                markContextUnhealthy(e.message || "f5 source failed");
                 await cleanup();
                 reject(e.message || "Unknown error while getting source info");
             }

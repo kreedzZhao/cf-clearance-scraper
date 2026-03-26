@@ -10,6 +10,15 @@ async function getCfClearance({ url, proxy }) {
     let page = null;
     let isResolved = false;
     let contextClosed = false;
+    let shouldReuseContext = true;
+    let discardReason = "";
+
+    const markContextUnhealthy = (reason) => {
+      shouldReuseContext = false;
+      if (!discardReason) {
+        discardReason = reason;
+      }
+    };
     
     const cleanup = async () => {
       if (page) {
@@ -22,7 +31,10 @@ async function getCfClearance({ url, proxy }) {
           contextClosed = true;
           // 使用上下文池释放上下文
           if (global.contextPool && typeof global.contextPool.releaseContext === 'function') {
-            await global.contextPool.releaseContext(context);
+            await global.contextPool.releaseContext(context, {
+              forceClose: !shouldReuseContext,
+              reason: discardReason || undefined,
+            });
           } else {
             // 回退到直接关闭
             await context.close();
@@ -36,6 +48,7 @@ async function getCfClearance({ url, proxy }) {
     const timeoutHandler = setTimeout(async () => {
       if (!isResolved) {
         isResolved = true;
+        markContextUnhealthy("cf_clearance timeout");
         await cleanup();
         reject("Timeout Error - cf_clearance cookie not obtained");
       }
@@ -137,6 +150,7 @@ async function getCfClearance({ url, proxy }) {
       if (!isResolved) {
         isResolved = true;
         clearTimeout(timeoutHandler);
+        markContextUnhealthy("cf_clearance cookie not found");
         await cleanup();
         reject('cf_clearance cookie not found after waiting');
       }
@@ -145,6 +159,7 @@ async function getCfClearance({ url, proxy }) {
       if (!isResolved) {
         isResolved = true;
         clearTimeout(timeoutHandler);
+        markContextUnhealthy(e.message || "cf_clearance request failed");
         await cleanup();
         reject(e.message || 'Unknown error while getting cf_clearance');
       }
