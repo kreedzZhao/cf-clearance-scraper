@@ -112,7 +112,8 @@ function getHcapSource({ url, proxy, operationType, operationConfig }) {
         if (req.resourceType() === 'xhr' || req.resourceType() === 'fetch') {
           if (url.startsWith('https://www.royalmail.com/')) return req.continue();
         }
-        return req.abort();
+        // return req.abort();
+        return req.continue();
       });
       page.on("response", async (res) => {
         try {
@@ -254,8 +255,24 @@ function getHcapSource({ url, proxy, operationType, operationConfig }) {
         timeout: 30000,
       });
 
+      // 前置操作：检查并点击 cookie consent 按钮，点击后重新跳转到目标 URL
+      try {
+        const consentButton = await page.locator("xpath=//button[@id='truste-consent-button']");
+        if (consentButton) {
+          console.log('click truste consent button');
+          await consentButton.click();
+          await sleep(1000);
+          // 重新跳转到目标 URL
+          await page.goto(url, {
+            waitUntil: "domcontentloaded",
+            timeout: 30000,
+          });
+        }
+      } catch (e) {
+        // consent 按钮不存在或点击失败，忽略继续
+      }
 
-      // 循环点击 cookie declie 按钮 以及 query 按钮
+      // 循环点击 query 按钮
       while (true) {
         try {
           // const cookieEnable = await page.locator(

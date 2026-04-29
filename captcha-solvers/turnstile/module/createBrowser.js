@@ -406,7 +406,7 @@ async function createBrowser(options = {}) {
             executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
             connectOption: { defaultViewport: null },
             disableXvfb: true,
-            args: ['--start-maximized']
+            // args: ['--start-maximized']
         }).catch(e => {
             console.error("Browser connection error:", e.message)
             console.error("Full error:", e)
