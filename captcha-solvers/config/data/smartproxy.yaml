@@ -1,0 +1,4 @@
+host: gate.dc.smartproxy.com
+port_range:
+  - 20001
+  - 37960

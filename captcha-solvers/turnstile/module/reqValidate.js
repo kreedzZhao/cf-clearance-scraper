@@ -94,6 +94,27 @@ const schema = {
             "type": "string",
             "format": "uri"
         },
+        "proxyProvider": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "enum": ["brightdata", "brightdata_by_usage", "smartproxy", "smartproxy_residential", "ipidea_residential", "agentgo_residential"]
+                },
+                "region": {
+                    "type": "string"
+                },
+                "lock": {
+                    "type": "boolean"
+                },
+                "lockTime": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            },
+            "required": ["name"],
+            "additionalProperties": false
+        },
         "authToken": {
             "type": "string"
         },

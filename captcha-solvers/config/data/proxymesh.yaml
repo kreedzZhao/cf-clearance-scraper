@@ -1,0 +1,49 @@
+regions:
+  - region: in
+    address: in.proxymesh.com:31280
+    ips: 10
+  - region: de
+    address: de.proxymesh.com:31280
+    ips: 10
+  - region: jp
+    address: jp.proxymesh.com:31280
+    ips: 10
+  - region: au
+    address: au.proxymesh.com:31280
+    ips: 10
+  - region: fr
+    address: fr.proxymesh.com:31280
+    ips: 10
+  - region: nl
+    address: nl.proxymesh.com:31280
+    ips: 10
+  - region: sg
+    address: sg.proxymesh.com:31280
+    ips: 10
+  - region: ch
+    address: ch.proxymesh.com:31280
+    ips: 10
+  - region: uk
+    address: uk.proxymesh.com:31280
+    ips: 10
+  - region: us
+    address: us.proxymesh.com:31280
+    ips: 10
+  - region: us
+    address: us-ca.proxymesh.com:31280
+    ips: 10
+  - region: us
+    address: us-fl.proxymesh.com:31280
+    ips: 10
+  - region: us
+    address: us-dc.proxymesh.com:31280
+    ips: 10
+  - region: us
+    address: us-il.proxymesh.com:31280
+    ips: 10
+  - region: us
+    address: us-ny.proxymesh.com:31280
+    ips: 10
+  - region: worldwide
+    address: world.proxymesh.com:31280
+    ips: 10000

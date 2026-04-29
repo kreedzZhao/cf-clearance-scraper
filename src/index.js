@@ -78,6 +78,7 @@ const wafSession = require('../captcha-solvers/turnstile/endpoints/wafSession')
 const getCfClearance = require('../captcha-solvers/turnstile/endpoints/cfcookieService')
 const interceptor = require('../captcha-solvers/turnstile/endpoints/interceptor')
 const { solveHcaptcha } = require('./endpoints/captcha')
+const { getProxyUrl: getProxyUrlFromProvider } = require('./utils/proxyProvider')
 const PythonRecaptchaSolver = require('../captcha-solvers/recaptcha/python-recaptcha-solver')
 const RecaptchaV3Solver = require('../captcha-solvers/recaptcha/recaptchav3/index')
 
@@ -285,6 +286,30 @@ function proxyStringToObject(proxyObj) {
     return proxyObj;
 }
 
+/**
+ * 解析代理配置：支持 proxy 对象、proxyString URL、proxyProvider 配置
+ * 优先级：proxy > proxyString > proxyProvider
+ */
+function resolveProxy(data) {
+    if (data.proxy) return;
+
+    if (data.proxyString) {
+        data.proxy = proxyStringToObject(data.proxyString);
+        return;
+    }
+
+    if (data.proxyProvider) {
+        const { name, ...options } = data.proxyProvider;
+        try {
+            const proxyUrl = getProxyUrlFromProvider(name, options);
+            data.proxy = proxyStringToObject(proxyUrl);
+            console.log(`[proxy] Using provider "${name}" -> ${data.proxy.host}:${data.proxy.port}`);
+        } catch (e) {
+            console.error(`[proxy] Provider "${name}" failed: ${e.message}`);
+        }
+    }
+}
+
 // 处理 cfcookie 请求
 async function handleCfcookieRequest(req, res) {
     const data = req.body;
@@ -297,9 +322,7 @@ async function handleCfcookieRequest(req, res) {
             cf_clearance: null 
         });
     }
-    if (!data.proxy && data.proxyString) {
-        data.proxy = proxyStringToObject(data.proxyString);
-    }
+    resolveProxy(data);
 
     // 转换为内部格式
     const internalData = {
@@ -406,9 +429,7 @@ async function handleInterceptorRequest(req, res) {
         });
     }
 
-    if (!data.proxy && data.proxyString) {
-        data.proxy = proxyStringToObject(data.proxyString);
-    }
+    resolveProxy(data);
 
     // 转换为内部格式
     const internalData = {
@@ -426,9 +447,7 @@ async function handleInterceptorRequest(req, res) {
 // 保留原始API格式支持 (向后兼容)
 app.post('/cf-clearance-scraper', async (req, res) => {
     const data = req.body
-    if (!data.proxy && data.proxyString) {
-        data.proxy = proxyStringToObject(data.proxyString);
-    }
+    resolveProxy(data);
     return handleClearanceRequest(req, res, data)
 })
 
