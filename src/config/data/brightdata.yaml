@@ -1,0 +1,8 @@
+host: zproxy.lum-superproxy.io
+port: 22225
+brightdata_username_template: "lum-customer-{username}-zone-data_center"
+brightdata_username_template_75k: "lum-customer-{username}-zone-datacenter_proxy_by_usage"
+regions:
+  - us
+  - de
+  - ru
