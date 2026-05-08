@@ -1,7 +1,8 @@
 const { max } = require("@xenova/transformers");
 const { executePageOperation } = require("../operations/query");
+const { applyUserAgent } = require("../../module/pageOptions");
 
-function getAkmSource({ url, proxy, operationType, operationConfig, targetUrl }) {
+function getAkmSource({ url, proxy, operationType, operationConfig, targetUrl, userAgent }) {
     return new Promise(async (resolve, reject) => {
         if (!url) return reject("Missing url parameter");
 
@@ -80,6 +81,7 @@ function getAkmSource({ url, proxy, operationType, operationConfig, targetUrl })
             }
 
              page = await context.newPage();
+             await applyUserAgent(page, userAgent);
              isResolved = false;
 
             if (proxy?.username && proxy?.password) {

@@ -66,6 +66,24 @@ if (result.code === 200) {
 }
 ```
 
+#### 单次请求指定 User-Agent
+
+如果目标是 iOS 内嵌 H5 页面，可以只给当前请求传 `userAgent`。该设置会在当前页面导航前生效，不会影响其他请求。
+
+```javascript
+const response = await fetch('http://localhost:3000/', {
+    method: 'POST',
+    headers: {
+        'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+        type: "cfcookie",
+        websiteUrl: "https://example.com/h5",
+        userAgent: "Emb/iOS/5.0.0"
+    })
+});
+```
+
 ## 验证码解决功能
 
 ### hCaptcha 解决

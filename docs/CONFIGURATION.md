@@ -52,6 +52,18 @@ VIEWPORT_HEIGHT=240
 BROWSER_CONNECT_TIMEOUT=120000
 ```
 
+### 请求级 User-Agent
+
+某些移动端内嵌 H5 页面会根据 UA 重定向。可以在单次请求里传 `userAgent`，服务会在当前页面导航前调用页面级 UA 设置，不会改 Chrome 全局启动参数，也不会影响其他请求。
+
+```json
+{
+  "type": "cfcookie",
+  "websiteUrl": "https://example.com/h5",
+  "userAgent": "Emb/iOS/5.0.0"
+}
+```
+
 ### 监控和告警配置
 
 ```bash

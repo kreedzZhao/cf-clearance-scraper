@@ -9,6 +9,7 @@ const authToken = process.env.AUTH_TOKEN || process.env.authToken || null // 兼
 const cors = require('cors')
 const reqValidate = require('../captcha-solvers/turnstile/module/reqValidate')
 const memoryManager = require('./utils/memoryManager')
+const { applyUserAgent } = require('../captcha-solvers/turnstile/module/pageOptions')
 
 // 请求计数器（替代浏览器实例计数）
 global.activeRequestCount = 0
@@ -189,6 +190,7 @@ async function handleRecaptchaV3Solve(data) {
         console.log('🚀 获取 reCAPTCHA v3 浏览器上下文...');
         context = await global.contextPool.getContext(data.proxy);
         const page = await context.newPage();
+        await applyUserAgent(page, data.userAgent);
         
         // 设置代理（如果提供）
         if (data.proxy) {
@@ -262,7 +264,8 @@ async function handleCftokenRequest(req, res) {
         url: data.websiteUrl,
         siteKey: data.websiteKey,
         mode: 'turnstile-min',
-        authToken: data.authToken
+        authToken: data.authToken,
+        userAgent: data.userAgent
     };
 
     // 处理请求
@@ -329,7 +332,8 @@ async function handleCfcookieRequest(req, res) {
         url: data.websiteUrl,
         mode: 'cfcookie',
         authToken: data.authToken,
-        proxy: data.proxy
+        proxy: data.proxy,
+        userAgent: data.userAgent
     };
 
     // 处理请求
@@ -365,7 +369,8 @@ async function handleRecaptchaV2Request(req, res) {
         language: data.language || 'en',
         method: data.method || 'audio',
         proxy: data.proxy,
-        authToken: data.authToken
+        authToken: data.authToken,
+        userAgent: data.userAgent
     };
 
     // 处理请求
@@ -409,7 +414,8 @@ async function handleRecaptchaV3Request(req, res) {
         mode: 'recaptchav3',
         action: data.pageAction,
         proxy: data.proxy,
-        authToken: data.authToken
+        authToken: data.authToken,
+        userAgent: data.userAgent
     };
 
     // 处理请求
@@ -437,7 +443,8 @@ async function handleInterceptorRequest(req, res) {
         targetUrl: data.targetUrl, // 可选，需要拦截的目标URL
         mode: 'interceptor',
         proxy: data.proxy,
-        authToken: data.authToken
+        authToken: data.authToken,
+        userAgent: data.userAgent
     };
 
     // 处理请求

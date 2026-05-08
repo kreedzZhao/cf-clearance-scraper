@@ -1,5 +1,6 @@
 const { max } = require("@xenova/transformers");
 const { executePageOperation } = require("../operations/query");
+const { applyUserAgent } = require("../../module/pageOptions");
 
 
 function parseScriptAttrs(rawAttrs) {
@@ -88,7 +89,7 @@ function buildOutput(scripts) {
     return out.join("\n");
 }
 
-function getF5Source({ url, proxy, operationType, operationConfig, maxChallengeRetries = 0 }) {
+function getF5Source({ url, proxy, operationType, operationConfig, maxChallengeRetries = 0, userAgent }) {
     return new Promise(async (resolve, reject) => {
         if (!url) return reject("Missing url parameter");
 
@@ -167,6 +168,7 @@ function getF5Source({ url, proxy, operationType, operationConfig, maxChallengeR
             }
 
             page = await context.newPage();
+            await applyUserAgent(page, userAgent);
 
             if (proxy?.username && proxy?.password) {
                 await page.authenticate({

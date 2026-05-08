@@ -11,6 +11,7 @@ const {
   AudioTranscriptionError 
 } = require('./errors');
 const { ORIGINAL_LANGUAGE_AUDIO } = require('./translations');
+const { applyUserAgent } = require('../turnstile/module/pageOptions');
 
 class RecaptchaService {
   constructor() {
@@ -21,7 +22,7 @@ class RecaptchaService {
   /**
    * 解决 reCAPTCHA v2
    */
-  async solveRecaptchaV2({ url, siteKey, proxy, language = 'en', method = 'audio' }) {
+  async solveRecaptchaV2({ url, siteKey, proxy, language = 'en', method = 'audio', userAgent }) {
     return new Promise(async (resolve, reject) => {
       if (!url) return reject("Missing url parameter");
       if (!siteKey) return reject("Missing siteKey parameter");
@@ -90,6 +91,7 @@ class RecaptchaService {
         }
 
         page = await context.newPage();
+        await applyUserAgent(page, userAgent);
 
         if (proxy?.username && proxy?.password) {
           await page.authenticate({
@@ -206,7 +208,7 @@ class RecaptchaService {
   /**
    * 解决 reCAPTCHA v3
    */
-  async solveRecaptchaV3({ url, siteKey, action = 'submit', proxy }) {
+  async solveRecaptchaV3({ url, siteKey, action = 'submit', proxy, userAgent }) {
     return new Promise(async (resolve, reject) => {
       if (!url) return reject("Missing url parameter");
       if (!siteKey) return reject("Missing siteKey parameter");
@@ -275,6 +277,7 @@ class RecaptchaService {
         }
 
         page = await context.newPage();
+        await applyUserAgent(page, userAgent);
 
         if (proxy?.username && proxy?.password) {
           await page.authenticate({

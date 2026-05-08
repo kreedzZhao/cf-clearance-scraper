@@ -1,5 +1,7 @@
 const fs = require("fs");
-function solveTurnstileMin({ url, proxy }) {
+const { applyUserAgent } = require("../module/pageOptions");
+
+function solveTurnstileMin({ url, proxy, userAgent }) {
   return new Promise(async (resolve, reject) => {
     if (!url) return reject("Missing url parameter");
 
@@ -22,6 +24,7 @@ function solveTurnstileMin({ url, proxy }) {
 
     try {
       const page = await context.newPage();
+      await applyUserAgent(page, userAgent);
 
       if (proxy?.username && proxy?.password)
         await page.authenticate({

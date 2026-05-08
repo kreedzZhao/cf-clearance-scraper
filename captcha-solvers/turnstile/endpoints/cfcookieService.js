@@ -2,7 +2,9 @@
  * CF Cookie Service - 专门提取 cf_clearance cookie
  * 使用上下文池优化版本，兼容 puppeteer-real-browser
  */
-async function getCfClearance({ url, proxy }) {
+const { applyUserAgent } = require("../module/pageOptions");
+
+async function getCfClearance({ url, proxy, userAgent }) {
   return new Promise(async (resolve, reject) => {
     if (!url) return reject("Missing url parameter");
     
@@ -73,6 +75,7 @@ async function getCfClearance({ url, proxy }) {
       }
 
       page = await context.newPage();
+      await applyUserAgent(page, userAgent);
       if (proxy?.username && proxy?.password) {
         await page.authenticate({
           username: proxy.username,

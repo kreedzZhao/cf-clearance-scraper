@@ -1,10 +1,11 @@
 const { executePageOperation, PageOperationEarlyTermination } = require("../operations/query");
+const { applyUserAgent } = require("../../module/pageOptions");
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function getHcapSource({ url, proxy, operationType, operationConfig }) {
+function getHcapSource({ url, proxy, operationType, operationConfig, userAgent }) {
   return new Promise(async (resolve, reject) => {
     if (!url) return reject("Missing url parameter");
 
@@ -83,6 +84,7 @@ function getHcapSource({ url, proxy, operationType, operationConfig }) {
       }
 
       page = await context.newPage();
+      await applyUserAgent(page, userAgent);
 
       if (proxy?.username && proxy?.password) {
         await page.authenticate({

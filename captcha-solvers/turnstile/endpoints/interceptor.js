@@ -1,4 +1,6 @@
-function interceptor({ url, targetUrl, proxy }) {
+const { applyUserAgent } = require("../module/pageOptions");
+
+function interceptor({ url, targetUrl, proxy, userAgent }) {
   return new Promise(async (resolve, reject) => {
     if (!url) return reject("Missing url parameter");
 
@@ -81,6 +83,7 @@ function interceptor({ url, targetUrl, proxy }) {
       }
 
       page = await context.newPage();
+      await applyUserAgent(page, userAgent);
 
       if (proxy?.username && proxy?.password) {
         await page.authenticate({

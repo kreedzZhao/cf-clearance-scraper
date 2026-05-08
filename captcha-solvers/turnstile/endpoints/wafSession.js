@@ -11,7 +11,9 @@ async function findAcceptLanguage(page) {
   });
 }
 
-function getSource({ url, proxy }) {
+const { applyUserAgent } = require("../module/pageOptions");
+
+function getSource({ url, proxy, userAgent }) {
   return new Promise(async (resolve, reject) => {
     if (!url) return reject("Missing url parameter");
     const context = await global.browser
@@ -32,6 +34,7 @@ function getSource({ url, proxy }) {
 
     try {
       const page = await context.newPage();
+      await applyUserAgent(page, userAgent);
 
       if (proxy?.username && proxy?.password)
         await page.authenticate({

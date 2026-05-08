@@ -103,7 +103,7 @@ function toPlaywrightProxy(proxy) {
 /**
  * 使用 Playwright 原生方式获取 F5 页面数据
  */
-function getF5SourcePlaywright({ url, proxy, operationType, operationConfig, maxChallengeRetries = 9 }) {
+function getF5SourcePlaywright({ url, proxy, operationType, operationConfig, maxChallengeRetries = 9, userAgent }) {
     return new Promise(async (resolve, reject) => {
         if (!url) return reject("Missing url parameter");
 
@@ -175,6 +175,7 @@ function getF5SourcePlaywright({ url, proxy, operationType, operationConfig, max
             const contextOptions = {
                 ignoreHTTPSErrors: true,
                 userAgent:
+                    userAgent ||
                     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
                 viewport: { width: 1280, height: 720 },
 

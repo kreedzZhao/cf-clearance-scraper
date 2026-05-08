@@ -1,6 +1,7 @@
 const { executePageOperation, PageOperationEarlyTermination } = require("../operations/query");
+const { applyUserAgent } = require("../../module/pageOptions");
 
-function getRecaptchaSource({ url, proxy, operationType, operationConfig, targetUrl }) {
+function getRecaptchaSource({ url, proxy, operationType, operationConfig, targetUrl, userAgent }) {
   return new Promise(async (resolve, reject) => {
     if (!url) return reject("Missing url parameter");
     if (!targetUrl) return reject("Missing targetUrl parameter");
@@ -68,6 +69,7 @@ function getRecaptchaSource({ url, proxy, operationType, operationConfig, target
       }
 
       page = await context.newPage();
+      await applyUserAgent(page, userAgent);
 
       if (proxy?.username && proxy?.password) {
         await page.authenticate({

@@ -118,6 +118,10 @@ const schema = {
         "authToken": {
             "type": "string"
         },
+        "userAgent": {
+            "type": "string",
+            "minLength": 1
+        },
         // reCAPTCHA 特有参数
         "language": {
             "type": "string",

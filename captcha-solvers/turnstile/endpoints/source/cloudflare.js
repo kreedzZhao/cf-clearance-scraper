@@ -1,6 +1,7 @@
 const { executePageOperation, PageOperationEarlyTermination } = require("../operations/query.js");
+const { applyUserAgent } = require("../../module/pageOptions");
 
-function getCfSource({ url, proxy, operationType, operationConfig, targetContent  }) {
+function getCfSource({ url, proxy, operationType, operationConfig, targetContent, userAgent }) {
   return new Promise(async (resolve, reject) => {
     if (!url) return reject("Missing url parameter");
 
@@ -71,6 +72,7 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
       }
 
       page = await context.newPage();
+      await applyUserAgent(page, userAgent);
 
       if (proxy?.username && proxy?.password)
         await page.authenticate({

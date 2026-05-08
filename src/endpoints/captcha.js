@@ -63,13 +63,14 @@ async function solveCaptcha(req, res) {
  */
 async function handleTurnstileMin(req, res) {
     try {
-        const { websiteUrl, websiteKey, authToken } = req.body;
+        const { websiteUrl, websiteKey, authToken, userAgent } = req.body;
         
         const data = {
             url: websiteUrl,
             siteKey: websiteKey,
             mode: 'turnstile-min',
-            authToken: authToken
+            authToken: authToken,
+            userAgent: userAgent
         };
 
         const result = await solveTurnstileMin(data);
@@ -92,13 +93,14 @@ async function handleTurnstileMin(req, res) {
  */
 async function handleTurnstileMax(req, res) {
     try {
-        const { websiteUrl, websiteKey, authToken } = req.body;
+        const { websiteUrl, websiteKey, authToken, userAgent } = req.body;
         
         const data = {
             url: websiteUrl,
             siteKey: websiteKey,
             mode: 'turnstile-max',
-            authToken: authToken
+            authToken: authToken,
+            userAgent: userAgent
         };
 
         const result = await solveTurnstileMax(data);
