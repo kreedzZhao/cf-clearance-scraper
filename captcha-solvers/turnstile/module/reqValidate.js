@@ -142,7 +142,7 @@ const schema = {
         // 页面操作参数（用于 getSource，mode: "source"）
         "operationType": {
             "type": "string",
-            "enum": ["CLICK", "INPUT_AND_CLICK", "MULTI_INPUT_AND_CLICK"]
+            "enum": ["CLICK", "INPUT_AND_CLICK", "INPUTS_AND_CLICK", "MULTI_INPUT_AND_CLICK"]
         },
         "operationConfig": {
             "oneOf": [
@@ -190,6 +190,51 @@ const schema = {
                         }
                     },
                     "required": ["steps"],
+                    "additionalProperties": false
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "inputs": {
+                            "type": "array",
+                            "minItems": 1,
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "inputValue": {
+                                        "type": "string"
+                                    },
+                                    "inputXpath": {
+                                        "type": "string"
+                                    },
+                                    "inputMethod": {
+                                        "type": "string",
+                                        "enum": ["type", "fill"]
+                                    },
+                                    "typeDelayMs": {
+                                        "type": "integer",
+                                        "minimum": 0
+                                    }
+                                },
+                                "required": ["inputValue", "inputXpath"],
+                                "additionalProperties": false
+                            }
+                        },
+                        "buttonXpathArr": {
+                            "type": "array",
+                            "items": { "type": "string" }
+                        },
+                        "inputMethod": {
+                            "type": "string",
+                            "enum": ["type", "fill"]
+                        },
+                        "typeDelayMs": {
+                            "type": "integer",
+                            "minimum": 0
+                        },
+                        ...commonOperationConfigProperties
+                    },
+                    "required": ["inputs", "buttonXpathArr"],
                     "additionalProperties": false
                 }
             ]

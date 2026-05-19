@@ -1,7 +1,8 @@
 // 页面操作类型枚举
 const PageOperationType = {
-    CLICK: 'CLICK',                // 仅点击按钮
+  CLICK: 'CLICK',                // 仅点击按钮
   INPUT_AND_CLICK: 'INPUT_AND_CLICK',  // 输入文本到 input 并点击按钮
+  INPUTS_AND_CLICK: 'INPUTS_AND_CLICK',  // 多个 input 填完后点击按钮
   MULTI_INPUT_AND_CLICK: 'MULTI_INPUT_AND_CLICK',  // 多步骤：输入+点击，等待导航，再输入+点击
   // 未来可扩展：CLICK_ONLY, INPUT_ONLY, WAIT, SCROLL 等
 };
@@ -281,6 +282,132 @@ async function executeInputAndClick(page, config) {
     }
 }
 
+async function waitForElement(page, selector, timeoutMs, label) {
+  const waitStartTime = Date.now();
+  let element;
+  while (!element && (Date.now() - waitStartTime) < timeoutMs) {
+    element = await page.locator(selector);
+    if (!element) {
+      await sleep(200);
+    }
+  }
+
+  if (!element) {
+    throw new Error(`${label} element not found within ${timeoutMs}ms: ${selector}`);
+  }
+
+  return element;
+}
+
+async function clearInputValue(page, selector) {
+  await page.evaluate(({ selector }) => {
+    const isXPath = selector.startsWith('//') || selector.startsWith('xpath=');
+    const rawSelector = selector.startsWith('xpath=') ? selector.slice(6) : selector;
+    const element = isXPath
+      ? document.evaluate(rawSelector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
+      : document.querySelector(rawSelector);
+
+    if (!element) {
+      return;
+    }
+
+    element.value = '';
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  }, { selector });
+}
+
+async function typeIntoInput(page, inputElement, selector, value, delayMs) {
+  if (!page.keyboard || typeof page.keyboard.type !== 'function') {
+    throw new Error('page.keyboard.type is required for type input method');
+  }
+
+  await clearInputValue(page, selector);
+  await inputElement.click();
+  await page.keyboard.type(value, { delay: delayMs });
+}
+
+/**
+ * 执行多个输入框填充后点击按钮的操作
+ * @param {Object} page - Puppeteer page 对象
+ * @param {Object} config - 操作配置
+ * @param {Array} config.inputs - 输入数组，每项包含 inputValue, inputXpath
+ * @param {Array} config.buttonXpathArr - 按钮 selector/xpath 数组
+ */
+async function executeInputsAndClick(page, config, options = {}) {
+  const {
+    inputs,
+    buttonXpathArr,
+    stopConditions,
+    postClickTimeoutMs,
+    postClickPollIntervalMs,
+    inputMethod = 'type',
+    typeDelayMs = 80,
+  } = config;
+
+  if (!inputs || !Array.isArray(inputs) || inputs.length === 0) {
+    throw new Error('inputs array is required for INPUTS_AND_CLICK operation');
+  }
+  if (!buttonXpathArr) {
+    throw new Error('buttonXpathArr is required for INPUTS_AND_CLICK operation');
+  }
+
+  for (let i = 0; i < inputs.length; i++) {
+    const { inputValue, inputXpath } = inputs[i];
+
+    if (!inputValue) {
+      throw new Error(`Input ${i + 1}: inputValue is required`);
+    }
+    if (!inputXpath) {
+      throw new Error(`Input ${i + 1}: inputXpath is required`);
+    }
+
+    const inputElement = await waitForElement(page, inputXpath, 15000, `Input ${i + 1}`);
+    try {
+      const method = inputs[i].inputMethod || inputMethod;
+      const delay = inputs[i].typeDelayMs ?? typeDelayMs;
+      if (method === 'fill') {
+        await inputElement.fill(inputValue);
+      } else {
+        await typeIntoInput(page, inputElement, inputXpath, inputValue, delay);
+      }
+    } catch (typeError) {
+      throw new Error(`Input ${i + 1}: Failed to input text: ${typeError.message}`);
+    }
+  }
+
+  for (let btnXpath of buttonXpathArr) {
+    let buttonElement = await page.locator(btnXpath);
+    if (!buttonElement) {
+      continue;
+    }
+
+    try {
+      console.log(`Clicking button with xpath: ${btnXpath}`);
+      if (typeof options.beforeClick === 'function') {
+        await options.beforeClick();
+      }
+      await buttonElement.click();
+    } catch (clickError) {
+      throw new Error(`Failed to click button element: ${clickError.message}`);
+    }
+
+    const postClickState = await waitForPostClickState(page, {
+      stopConditions,
+      postClickTimeoutMs,
+      postClickPollIntervalMs,
+    });
+
+    if (postClickState.type === 'terminated') {
+      throw new PageOperationEarlyTermination({
+        result: postClickState.result,
+        reason: postClickState.result,
+        matchedCondition: postClickState.condition,
+      });
+    }
+  }
+}
+
 /**
  * 执行多步骤输入+点击操作
  * 每一步：等待 input 出现 → 输入文本 → 点击按钮
@@ -428,7 +555,7 @@ async function executeClick(page, config) {
  * @param {string} operationType - 操作类型
  * @param {Object} operationConfig - 操作配置
  */
-async function executePageOperation(page, operationType, operationConfig) {
+async function executePageOperation(page, operationType, operationConfig, options = {}) {
   if (!operationType) {
     return; // 如果没有指定操作类型，直接返回
   }
@@ -436,6 +563,8 @@ async function executePageOperation(page, operationType, operationConfig) {
   switch (operationType) {
     case PageOperationType.INPUT_AND_CLICK:
       return await executeInputAndClick(page, operationConfig);
+    case PageOperationType.INPUTS_AND_CLICK:
+      return await executeInputsAndClick(page, operationConfig, options);
     case PageOperationType.CLICK:
       // 仅点击按钮的操作可以复用 INPUT_AND_CLICK 逻辑，传入空的 trackingNumber
       return await executeClick(page, operationConfig);

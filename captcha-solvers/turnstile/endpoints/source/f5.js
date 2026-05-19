@@ -227,6 +227,14 @@ function getF5Source({ url, proxy, operationType, operationConfig, maxChallengeR
                             await cleanup();
                             resolve("Blocked by F5 without challenge");
                         }
+
+                        if (html.includes("Sorry! The Track application is having technical difficulties. Please try your search again.")) {
+                            // 返回响应查不到
+                            isResolved = true;
+                            clearTimeout(timeoutHandler);
+                            await cleanup();
+                            resolve(html);
+                        }
                     }
                 } catch (e) { }
             });

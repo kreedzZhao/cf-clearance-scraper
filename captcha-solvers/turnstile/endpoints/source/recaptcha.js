@@ -1,6 +1,96 @@
 const { executePageOperation, PageOperationEarlyTermination } = require("../operations/query");
 const { applyUserAgent } = require("../../module/pageOptions");
 
+async function forceCurrentTabNavigation(page) {
+  return await page.evaluate(() => {
+    const targetElements = Array.from(document.querySelectorAll('form[target="_blank"], a[target="_blank"]'));
+    const formTargetElements = Array.from(document.querySelectorAll('button[formtarget="_blank"], input[formtarget="_blank"]'));
+
+    for (const element of targetElements) {
+      element.setAttribute("target", "_self");
+    }
+
+    for (const element of formTargetElements) {
+      element.setAttribute("formtarget", "_self");
+    }
+
+    return {
+      targetUpdated: targetElements.length,
+      formTargetUpdated: formTargetElements.length,
+    };
+  });
+}
+
+function attachTargetResponseHandlers({
+  page,
+  url,
+  targetUrl,
+  getIsResolved,
+  setResolved,
+  clearTimers,
+  cleanup,
+  resolve,
+  reject,
+  markContextUnhealthy,
+}) {
+  const handleResponse = async (res) => {
+    try {
+      if (getIsResolved()) return;
+
+      // 429 限频
+      if (
+        url &&
+        [429].includes(res.status()) &&
+        [url, url + "/"].includes(res.url())
+      ) {
+        setResolved(true);
+        clearTimers();
+        markContextUnhealthy("rate limit exceeded");
+        await cleanup();
+        resolve("Rate Limit Exceeded");
+        return;
+      }
+
+      // 监控当前页面上的目标 API/页面响应。
+      if (res.url().includes(targetUrl)) {
+        console.log(`[recaptcha] Target API response: ${res.status()} ${res.url()}`);
+
+        if (res.status() !== 200) {
+          setResolved(true);
+          clearTimers();
+          markContextUnhealthy(`target API status ${res.status()}`);
+          await cleanup();
+          reject(`Target API failed, status code: ${res.status()}`);
+          return;
+        }
+
+        // 尝试 JSON 解析，失败则返回文本
+        let data;
+        try {
+          data = await res.json();
+        } catch (e) {
+          data = await res.text();
+        }
+
+        setResolved(true);
+        clearTimers();
+        await cleanup();
+        resolve(data);
+      }
+    } catch (e) {}
+  };
+
+  page.on("response", handleResponse);
+
+  return {
+    detach() {
+      if (typeof page.off === "function") {
+        page.off("response", handleResponse);
+      }
+    },
+  };
+}
+
 function getRecaptchaSource({ url, proxy, operationType, operationConfig, targetUrl, userAgent }) {
   return new Promise(async (resolve, reject) => {
     if (!url) return reject("Missing url parameter");
@@ -12,6 +102,8 @@ function getRecaptchaSource({ url, proxy, operationType, operationConfig, target
     let contextClosed = false;
     let shouldReuseContext = true;
     let discardReason = "";
+    let responseHandlers = null;
+    let operationTimeoutHandler = null;
 
     const markContextUnhealthy = (reason) => {
       shouldReuseContext = false;
@@ -20,7 +112,19 @@ function getRecaptchaSource({ url, proxy, operationType, operationConfig, target
       }
     };
 
+    const clearTimers = () => {
+      clearTimeout(timeoutHandler);
+      if (operationTimeoutHandler) {
+        clearTimeout(operationTimeoutHandler);
+        operationTimeoutHandler = null;
+      }
+    };
+
     const cleanup = async () => {
+      if (responseHandlers) {
+        responseHandlers.detach();
+        responseHandlers = null;
+      }
       if (page) {
         try {
           await page.close().catch(() => {});
@@ -78,53 +182,19 @@ function getRecaptchaSource({ url, proxy, operationType, operationConfig, target
         });
       }
 
-      await page.setRequestInterception(true);
-      page.on("request", async (request) => request.continue());
-
-      page.on("response", async (res) => {
-        try {
-          if (isResolved) return;
-
-          // 429 限频
-          if (
-            [429].includes(res.status()) &&
-            [url, url + "/"].includes(res.url())
-          ) {
-            isResolved = true;
-            clearTimeout(timeoutHandler);
-            markContextUnhealthy("rate limit exceeded");
-            await cleanup();
-            resolve("Rate Limit Exceeded");
-            return;
-          }
-
-          // 监控目标 API 响应
-          if (res.url().includes(targetUrl)) {
-            console.log(`[recaptcha] Target API response: ${res.status()} ${res.url()}`);
-
-            if (res.status() !== 200) {
-              isResolved = true;
-              clearTimeout(timeoutHandler);
-              markContextUnhealthy(`target API status ${res.status()}`);
-              await cleanup();
-              reject(`Target API failed, status code: ${res.status()}`);
-              return;
-            }
-
-            // 尝试 JSON 解析，失败则返回文本
-            let data;
-            try {
-              data = await res.json();
-            } catch (e) {
-              data = await res.text();
-            }
-
-            isResolved = true;
-            clearTimeout(timeoutHandler);
-            await cleanup();
-            resolve(data);
-          }
-        } catch (e) {}
+      responseHandlers = attachTargetResponseHandlers({
+        page,
+        url,
+        targetUrl,
+        getIsResolved: () => isResolved,
+        setResolved: (value) => {
+          isResolved = value;
+        },
+        clearTimers,
+        cleanup,
+        resolve,
+        reject,
+        markContextUnhealthy,
       });
 
       await page.goto(url, {
@@ -135,18 +205,21 @@ function getRecaptchaSource({ url, proxy, operationType, operationConfig, target
       // 执行页面操作（输入 + 点击）
       if (operationType && operationConfig) {
         try {
-          await executePageOperation(page, operationType, operationConfig);
+          await forceCurrentTabNavigation(page);
+          await executePageOperation(page, operationType, operationConfig, {
+            beforeClick: () => forceCurrentTabNavigation(page),
+          });
         } catch (operationError) {
           if (operationError instanceof PageOperationEarlyTermination || operationError?.isPageOperationEarlyTermination) {
             isResolved = true;
-            clearTimeout(timeoutHandler);
+            clearTimers();
             await cleanup();
             resolve(operationError.result);
             return;
           }
 
           isResolved = true;
-          clearTimeout(timeoutHandler);
+          clearTimers();
           markContextUnhealthy(`page operation failed: ${operationError.message}`);
           await cleanup();
           reject(`Page operation failed: ${operationError.message}`);
@@ -155,10 +228,10 @@ function getRecaptchaSource({ url, proxy, operationType, operationConfig, target
       }
 
       // 最大超时时间 2 min
-      setTimeout(async () => {
+      operationTimeoutHandler = setTimeout(async () => {
         if (!isResolved) {
           isResolved = true;
-          clearTimeout(timeoutHandler);
+          clearTimers();
           markContextUnhealthy("recaptcha page operation timeout");
           await cleanup();
           reject("Timeout Error - page operation not completed");
@@ -167,7 +240,7 @@ function getRecaptchaSource({ url, proxy, operationType, operationConfig, target
     } catch (e) {
       if (!isResolved) {
         isResolved = true;
-        clearTimeout(timeoutHandler);
+        clearTimers();
         markContextUnhealthy(e.message || "recaptcha source failed");
         await cleanup();
         reject(e.message || "Unknown error while getting recaptcha source");
@@ -177,3 +250,5 @@ function getRecaptchaSource({ url, proxy, operationType, operationConfig, target
 }
 
 module.exports = getRecaptchaSource;
+module.exports.attachTargetResponseHandlers = attachTargetResponseHandlers;
+module.exports.forceCurrentTabNavigation = forceCurrentTabNavigation;
