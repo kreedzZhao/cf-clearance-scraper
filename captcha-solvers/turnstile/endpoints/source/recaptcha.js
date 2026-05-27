@@ -1,6 +1,126 @@
 const { executePageOperation, PageOperationEarlyTermination } = require("../operations/query");
 const { applyUserAgent } = require("../../module/pageOptions");
 
+const BLOCKED_HOSTS = new Set([
+  "b.delivery.consentmanager.net",
+  "cdn.consentmanager.net",
+  "pagead2.googlesyndication.com",
+  "googleads.g.doubleclick.net",
+  "stats.g.doubleclick.net",
+  "www.googletagmanager.com",
+  "www.google-analytics.com",
+  "analytics.google.com",
+  "fonts.gstatic.com",
+]);
+
+const BLOCKED_RESOURCE_TYPES = new Set(["image", "font", "media", "manifest"]);
+const BLOCKED_PATH_PARTS = ["/favicon/", "/favicon.ico"];
+
+function requestUrl(request) {
+  return typeof request.url === "function" ? request.url() : String(request.url || "");
+}
+
+function requestResourceType(request) {
+  return typeof request.resourceType === "function"
+    ? request.resourceType()
+    : String(request.resource_type || request.resourceType || "");
+}
+
+async function continueRequest(requestOrRoute) {
+  if (typeof requestOrRoute.continue === "function") return await requestOrRoute.continue();
+  if (typeof requestOrRoute.continue_ === "function") return await requestOrRoute.continue_();
+}
+
+async function abortRequest(requestOrRoute) {
+  if (typeof requestOrRoute.abort === "function") return await requestOrRoute.abort();
+}
+
+function urlIncludesTarget(requestUrlValue, targetUrl) {
+  return Boolean(targetUrl && requestUrlValue.includes(targetUrl));
+}
+
+function shouldBlockUnneededRequest({
+  requestUrl,
+  resourceType,
+  pageUrl,
+  targetUrl,
+  blockedHosts = BLOCKED_HOSTS,
+  blockedResourceTypes = BLOCKED_RESOURCE_TYPES,
+  blockedPathParts = BLOCKED_PATH_PARTS,
+} = {}) {
+  if (!requestUrl) return false;
+  if (urlIncludesTarget(requestUrl, targetUrl)) return false;
+
+  let parsed;
+  try {
+    parsed = new URL(requestUrl);
+  } catch (e) {
+    return false;
+  }
+
+  const host = parsed.host.toLowerCase();
+  const path = parsed.pathname.toLowerCase();
+  const normalizedType = String(resourceType || "").toLowerCase();
+
+  if (blockedHosts.has(host)) return true;
+  if (blockedResourceTypes.has(normalizedType)) return true;
+  if (blockedPathParts.some(part => path.includes(part))) return true;
+
+  if (normalizedType === "script") {
+    try {
+      const pageHost = new URL(pageUrl).host.toLowerCase();
+      if (host !== pageHost && (
+        host.includes("googlesyndication.com") ||
+        host.includes("doubleclick.net") ||
+        host.includes("googletagmanager.com") ||
+        host.includes("google-analytics.com")
+      )) {
+        return true;
+      }
+    } catch (e) {}
+  }
+
+  return false;
+}
+
+async function installRecaptchaRequestFilters(page, { url, targetUrl, blockUnneededRequests = true } = {}) {
+  if (!blockUnneededRequests) return;
+
+  const handleRequest = async (request, fallbackRoute) => {
+    const currentUrl = requestUrl(request);
+    const type = requestResourceType(request);
+    const requestOrRoute = fallbackRoute || request;
+    try {
+      if (shouldBlockUnneededRequest({
+        requestUrl: currentUrl,
+        resourceType: type,
+        pageUrl: url,
+        targetUrl,
+      })) {
+        return await abortRequest(requestOrRoute);
+      }
+      return await continueRequest(requestOrRoute);
+    } catch (e) {
+      try {
+        return await continueRequest(requestOrRoute);
+      } catch (_) {}
+    }
+  };
+
+  if (typeof page.setRequestInterception === "function") {
+    await page.setRequestInterception(true);
+    page.on("request", handleRequest);
+    return;
+  }
+
+  if (typeof page.route === "function") {
+    await page.route("**/*", async (route) => {
+      const request = typeof route.request === "function" ? route.request() : route.request;
+      await handleRequest(request, route);
+    });
+  }
+}
+
 async function forceCurrentTabNavigation(page) {
   return await page.evaluate(() => {
     const targetElements = Array.from(document.querySelectorAll('form[target="_blank"], a[target="_blank"]'));
@@ -55,7 +175,8 @@ function attachTargetResponseHandlers({
       if (res.url().includes(targetUrl)) {
         console.log(`[recaptcha] Target API response: ${res.status()} ${res.url()}`);
 
-        if (res.status() !== 200) {
+        // 2xx 和 3xx 错误不重试，直接返回错误结果
+        if (res.status() < 200 || res.status() >= 400) {
           setResolved(true);
           clearTimers();
           markContextUnhealthy(`target API status ${res.status()}`);
@@ -91,7 +212,7 @@ function attachTargetResponseHandlers({
   };
 }
 
-function getRecaptchaSource({ url, proxy, operationType, operationConfig, targetUrl, userAgent }) {
+function getRecaptchaSource({ url, proxy, operationType, operationConfig, targetUrl, userAgent, blockUnneededRequests = true }) {
   return new Promise(async (resolve, reject) => {
     if (!url) return reject("Missing url parameter");
     if (!targetUrl) return reject("Missing targetUrl parameter");
@@ -182,6 +303,12 @@ function getRecaptchaSource({ url, proxy, operationType, operationConfig, target
         });
       }
 
+      await installRecaptchaRequestFilters(page, {
+        url,
+        targetUrl,
+        blockUnneededRequests,
+      });
+
       responseHandlers = attachTargetResponseHandlers({
         page,
         url,
@@ -252,3 +379,5 @@ function getRecaptchaSource({ url, proxy, operationType, operationConfig, target
 module.exports = getRecaptchaSource;
 module.exports.attachTargetResponseHandlers = attachTargetResponseHandlers;
 module.exports.forceCurrentTabNavigation = forceCurrentTabNavigation;
+module.exports.shouldBlockUnneededRequest = shouldBlockUnneededRequest;
+module.exports.installRecaptchaRequestFilters = installRecaptchaRequestFilters;
