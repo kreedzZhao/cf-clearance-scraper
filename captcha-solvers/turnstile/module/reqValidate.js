@@ -139,6 +139,30 @@ const schema = {
             "type": "string",
             "format": "uri"
         },
+        // arco_tracking source 参数
+        "pageUrl": {
+            "type": "string",
+            "format": "uri"
+        },
+        "trackingNumber": {
+            "type": "string"
+        },
+        "year": {
+            "type": "string"
+        },
+        "sender": {
+            "type": "string"
+        },
+        "customerCode": {
+            "type": "string"
+        },
+        "customer_code": {
+            "type": "string"
+        },
+        "timeoutMs": {
+            "type": "integer",
+            "minimum": 1000
+        },
         // 页面操作参数（用于 getSource，mode: "source"）
         "operationType": {
             "type": "string",
