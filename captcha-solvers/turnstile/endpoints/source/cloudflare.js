@@ -88,12 +88,13 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
       page.on("request", async (request) => request.continue());
       page.on("response", async (res) => {
         try {
+          console.log(res.status(), res.url());
           if (isResolved) return;
 
           // 429 限频 直接关闭
           if (
             [429].includes(res.status()) &&
-            [url, url + "/"].includes(res.url())
+            res.url().includes(url)
           ) {
             const cookies = await page.cookies();
             await page.deleteCookie(...cookies);
@@ -111,7 +112,7 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
           // 403 禁止访问 直接关闭
           if (
             [403].includes(res.status()) &&
-            [url, url + "/"].includes(res.url()) &&
+            res.url().includes(url) &&
             !(await res.text()).includes("Just a moment...")
           ) {
             isResolved = true;
@@ -124,7 +125,7 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
 
           if (
             [200, 302].includes(res.status()) &&
-            [url, url + "/"].includes(res.url())
+            res.url().includes(url)
           ) {
             const html = await res.text();
 
