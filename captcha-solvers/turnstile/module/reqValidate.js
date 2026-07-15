@@ -12,6 +12,11 @@ const stopConditionItemSchema = {
             "items": { "type": "string" },
             "minItems": 1
         },
+        "textExcludes": {
+            "type": "array",
+            "items": { "type": "string" },
+            "minItems": 1
+        },
         "selectorArr": {
             "type": "array",
             "items": { "type": "string" },
@@ -162,6 +167,86 @@ const schema = {
         "timeoutMs": {
             "type": "integer",
             "minimum": 1000
+        },
+        // browser_render source 参数
+        "navigationTimeoutMs": {
+            "type": "integer",
+            "minimum": 1000
+        },
+        "renderDelayMs": {
+            "type": "integer",
+            "minimum": 0
+        },
+        "domStableMs": {
+            "type": "integer",
+            "minimum": 0
+        },
+        "pollIntervalMs": {
+            "type": "integer",
+            "minimum": 25
+        },
+        "waitForSelector": {
+            "type": "string",
+            "minLength": 1
+        },
+        "waitUntil": {
+            "type": "string",
+            "enum": ["load", "domcontentloaded", "networkidle0", "networkidle2"]
+        },
+        "renderStopConditions": {
+            "type": "array",
+            "items": stopConditionItemSchema,
+            "minItems": 1
+        },
+        "stopStableMs": {
+            "type": "integer",
+            "minimum": 0
+        },
+        "captureSteps": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64
+                    },
+                    "clickSelector": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "waitForSelector": {
+                        "type": "string",
+                        "minLength": 1
+                    },
+                    "targetContent": {
+                        "oneOf": [
+                            { "type": "string" },
+                            { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+                        ]
+                    },
+                    "timeoutMs": {
+                        "type": "integer",
+                        "minimum": 1
+                    },
+                    "renderDelayMs": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "domStableMs": {
+                        "type": "integer",
+                        "minimum": 0
+                    },
+                    "pollIntervalMs": {
+                        "type": "integer",
+                        "minimum": 25
+                    }
+                },
+                "required": ["name", "clickSelector"],
+                "additionalProperties": false
+            }
         },
         // 页面操作参数（用于 getSource，mode: "source"）
         "operationType": {

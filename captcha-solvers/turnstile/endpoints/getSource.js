@@ -5,6 +5,7 @@ const getF5SourcePlaywright = require("./source/f5_playwright.js");
 const getAkMSource = require("./source/akm.js");
 const getRecaptchaSource = require("./source/recaptcha.js");
 const getArcoTrackingSource = require("./source/arco_tracking.js");
+const getBrowserRenderedSource = require("./source/browser_render.js");
 
 function getSource(config) {
   const action = config.action || "cloudflare";
@@ -23,6 +24,8 @@ function getSource(config) {
       return getRecaptchaSource(config);
     case "arco_tracking":
       return getArcoTrackingSource(config);
+    case "browser_render":
+      return getBrowserRenderedSource(config);
     default:
       return Promise.reject(`Unsupported action: ${action}`);
   }

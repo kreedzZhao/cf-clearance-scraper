@@ -123,7 +123,18 @@ app.post('/cf-clearance-scraper', async (req, res) => {
         switch (mode) {
             case "source":
                 const sourceRes = await getSource(data)
-                result = { code: 200, message: 'Success', token: null, source: sourceRes }
+                if (sourceRes && sourceRes.__browserRenderResult === true) {
+                    result = {
+                        code: 200,
+                        message: sourceRes.message || 'Success',
+                        status: sourceRes.status || 'ok',
+                        token: null,
+                        source: sourceRes.source ?? null,
+                        ...(sourceRes.reason ? { reason: sourceRes.reason } : {})
+                    }
+                } else {
+                    result = { code: 200, message: 'Success', token: null, source: sourceRes }
+                }
                 break;
             case "turnstile-min":
                 const tokenMin = await solveTurnstileMin(data)
