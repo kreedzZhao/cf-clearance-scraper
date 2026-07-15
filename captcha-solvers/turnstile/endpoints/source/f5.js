@@ -188,14 +188,10 @@ function getF5Source({ url, proxy, operationType, operationConfig, maxChallengeR
                     if (
                         res.url().includes("anyapp_outage_apology")
                     ) {
-                        console.log(res.url(), "anyapp_outage_apology");
-
                         if (challegeScripts) {
                             if (challengeAttempts < maxChallengeRetries) {
                                 challengeAttempts++;
-                                console.log(`Executing challenge scripts, attempt ${challengeAttempts}/${maxChallengeRetries}`);
                                 await page.evaluate(challegeScripts);
-                                console.log('Executed challenge scripts on the page');
                             } else {
                                 await page.reload({ waitUntil: "domcontentloaded" });
                                 console.warn(`Max challenge retries reached (${maxChallengeRetries}). Not executing challenge scripts anymore.`);

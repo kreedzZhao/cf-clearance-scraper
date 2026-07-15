@@ -205,29 +205,6 @@ async function waitForRenderedState(page, options = {}) {
   );
 }
 
-async function createContext(proxy) {
-  if (global.contextPool && typeof global.contextPool.getContext === "function") {
-    return {
-      context: await global.contextPool.getContext(proxy),
-      pooled: true,
-    };
-  }
-
-  if (!global.browser || typeof global.browser.createBrowserContext !== "function") {
-    throw new Error("Browser is not initialized");
-  }
-
-  const options = { ignoreHTTPSErrors: true };
-  if (proxy && proxy.host && proxy.port) {
-    options.proxyServer = `http://${proxy.host}:${proxy.port}`;
-  }
-
-  return {
-    context: await global.browser.createBrowserContext(options),
-    pooled: false,
-  };
-}
-
 async function closeQuietly(target) {
   if (!target || typeof target.close !== "function") return;
   try {
@@ -385,14 +362,19 @@ async function getBrowserRenderedSource(config = {}) {
 
   let page = null;
   let context = null;
-  let pooled = false;
   let shouldReuseContext = true;
   let discardReason = "";
 
   try {
-    const contextResult = await createContext(proxy);
-    context = contextResult.context;
-    pooled = contextResult.pooled;
+    if (global.contextPool && typeof global.contextPool.getContext === "function") {
+      context = await global.contextPool.getContext(proxy);
+    } else {
+      context = await global.browser
+        .createBrowserContext({
+          proxyServer: proxy ? `http://${proxy.host}:${proxy.port}` : undefined,
+        })
+        .catch(() => null);
+    }
 
     if (!context) throw new Error("Failed to create browser context");
 
@@ -501,7 +483,7 @@ async function getBrowserRenderedSource(config = {}) {
     await closeQuietly(page);
 
     if (context) {
-      if (pooled && global.contextPool && typeof global.contextPool.releaseContext === "function") {
+      if (global.contextPool && typeof global.contextPool.releaseContext === "function") {
         try {
           await global.contextPool.releaseContext(context, {
             forceClose: !shouldReuseContext,

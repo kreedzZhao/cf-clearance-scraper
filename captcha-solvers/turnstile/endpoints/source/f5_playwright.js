@@ -229,18 +229,12 @@ function getF5SourcePlaywright({ url, proxy, operationType, operationConfig, max
                     const responseUrl = res.url();
                     // 异常页面 直接关闭
                     if (responseUrl.includes("anyapp_outage_apology")) {
-                        console.log(responseUrl, "anyapp_outage_apology");
-
                         if (challengeScripts && !challengeInProgress) {
                             if (challengeAttempts < maxChallengeRetries) {
                                 challengeAttempts++;
-                                console.log(
-                                    `Executing challenge scripts, attempt ${challengeAttempts}/${maxChallengeRetries}`
-                                );
                                 challengeInProgress = true;
                                 try {
                                     await page.evaluate(challengeScripts);
-                                    console.log("Executed challenge scripts on the page");
                                 } finally {
                                     challengeInProgress = false;
                                 }
@@ -256,11 +250,9 @@ function getF5SourcePlaywright({ url, proxy, operationType, operationConfig, max
                         return;
                     }
 
-                    console.log(url);
                     // challenge 页面
                     if (responseUrl.includes("TrackConfirmAction")) {
                         const html = await res.text().catch(() => "");
-                        console.log("Received TrackConfirmAction response, status:", res.status());
                         if (html.includes("afterReadyCbCalled") || res.status() === 302) {
                             const jsScripts = extractScripts(html).filter((s) => !s.hasSrc);
                             challengeScripts = buildOutput(jsScripts);

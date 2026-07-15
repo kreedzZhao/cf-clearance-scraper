@@ -90,8 +90,6 @@ async function getCfClearance({ url, proxy, userAgent }) {
       // })
       // console.log('✅ 访问 ip 页面成功');
 
-      console.log(`正在访问: ${url}`);
-      
       // 直接访问页面
       await page.goto(url, {
         waitUntil: "domcontentloaded",
@@ -99,8 +97,6 @@ async function getCfClearance({ url, proxy, userAgent }) {
       });
       
       // 等待页面完全加载，让 Cloudflare 有时间设置 cookie
-      console.log('等待页面加载和 Cloudflare 验证...');
-      
       let maxWaitTime = 90; // 等待90秒
       let checkInterval = 3; // 每3秒检查一次，减少频率
       
@@ -115,7 +111,6 @@ async function getCfClearance({ url, proxy, userAgent }) {
           const cfClearanceCookie = cookies.find(cookie => cookie.name === 'cf_clearance');
           
           if (cfClearanceCookie && cfClearanceCookie.value) {
-            console.log('✅ 成功获取 cf_clearance cookie');
             isResolved = true;
             clearTimeout(timeoutHandler);
             await cleanup();
@@ -131,20 +126,14 @@ async function getCfClearance({ url, proxy, userAgent }) {
                                       content.includes('DDoS protection by Cloudflare') ||
                                       content.includes('Ray ID:');
           
-          if (isCloudflareChallenge) {
-            console.log(`⏳ Cloudflare 验证中... (${i * checkInterval}/${maxWaitTime}s)`);
-          } else {
-            console.log(`🔍 页面已加载，等待 cf_clearance cookie... (${i * checkInterval}/${maxWaitTime}s)`);
-            
+          if (!isCloudflareChallenge) {
             // 如果页面已经加载完成但没有验证页面，可能需要刷新一下
             if (i > 5 && i % 10 === 0) {
-              console.log('🔄 尝试刷新页面以触发 Cloudflare 验证...');
               await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
             }
           }
           
         } catch (e) {
-          console.error('检查过程中发生错误:', e.message);
           // 继续等待，不立即退出
         }
       }

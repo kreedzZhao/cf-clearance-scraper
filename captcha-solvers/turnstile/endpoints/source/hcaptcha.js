@@ -3,12 +3,14 @@ const { applyUserAgent } = require("../../module/pageOptions");
 
 const ROYAL_MAIL_ORIGIN = "https://www.royalmail.com";
 const ROYAL_MAIL_API_ORIGIN = "https://api-web.royalmail.com";
+const ROYAL_MAIL_DEBUG = process.env.DEBUG_ROYAL_MAIL_HCAPTCHA === "true";
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function royalMailLog(message, data) {
+  if (!ROYAL_MAIL_DEBUG) return;
   if (data === undefined) {
     console.log(`[royal-mail:hcaptcha] ${message}`);
     return;
@@ -304,6 +306,7 @@ async function suppressRoyalMailCookieOverlay(page) {
 }
 
 async function logRoyalMailPageState(page, phase) {
+  if (!ROYAL_MAIL_DEBUG) return null;
   try {
     const state = await page.evaluate(() => {
       const visible = (element) => {
@@ -713,7 +716,6 @@ function getHcapSource({ url, proxy, operationType, operationConfig, userAgent, 
               "mailpieces/microsummary/v1/summary",
             )
           ) {
-            console.log(res.status(), res.url());
             // if (operationType && operationConfig) {
             //   try {
             //     // 等待2秒
@@ -760,7 +762,6 @@ function getHcapSource({ url, proxy, operationType, operationConfig, userAgent, 
               "mailpieces/microsummary/v1/summary",
             ))
           ) {
-            console.log(res.url());
             // 如果提供了操作配置，在获取 HTML 之前执行页面操作
             if (operationType && operationConfig) {
               try {

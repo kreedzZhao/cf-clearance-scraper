@@ -173,8 +173,6 @@ function attachTargetResponseHandlers({
 
       // 监控当前页面上的目标 API/页面响应。
       if (res.url().includes(targetUrl)) {
-        console.log(`[recaptcha] Target API response: ${res.status()} ${res.url()}`);
-
         // 2xx 和 3xx 错误不重试，直接返回错误结果
         if (res.status() < 200 || res.status() >= 400) {
           setResolved(true);

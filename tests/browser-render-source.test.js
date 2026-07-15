@@ -175,6 +175,45 @@ describe("browser_render source", () => {
     });
   });
 
+  test("uses the same direct proxy context fallback as other source handlers", async () => {
+    const page = {
+      goto: jest.fn().mockResolvedValue(undefined),
+      evaluate: jest.fn().mockResolvedValue({
+        selectorMatched: true,
+        contentMatched: true,
+        matchedStopConditionIndex: -1,
+        signature: "rendered",
+      }),
+      content: jest.fn().mockResolvedValue("<html><body>Rendered</body></html>"),
+      close: jest.fn().mockResolvedValue(undefined),
+    };
+    const context = {
+      newPage: jest.fn().mockResolvedValue(page),
+      close: jest.fn().mockResolvedValue(undefined),
+    };
+    global.browser = {
+      createBrowserContext: jest.fn().mockResolvedValue(context),
+    };
+
+    const result = await getSource({
+      action: "browser_render",
+      url: "https://example.com/tracking",
+      proxy: {
+        host: "proxy.example.com",
+        port: 8000,
+      },
+      renderDelayMs: 0,
+      domStableMs: 0,
+      timeoutMs: 5000,
+    });
+
+    expect(result.status).toBe("ok");
+    expect(global.browser.createBrowserContext).toHaveBeenCalledWith({
+      proxyServer: "http://proxy.example.com:8000",
+    });
+    expect(context.close).toHaveBeenCalled();
+  });
+
   test("returns the initial DOM and each configured post-click capture", async () => {
     const page = {
       goto: jest.fn().mockResolvedValue(undefined),

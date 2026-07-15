@@ -162,9 +162,9 @@ async function createBrowser(options = {}) {
                     this.contextUsage.set(context, 1)
 
                     const meta = this.setContextMeta(context, normalizedProxy)
-                    console.log(
-                        `🆕 Created new ${this.getProxyLabel(meta.proxy)} context (${this.used} active, ${this.getAvailableCount()} available, total: ${this.getTotalContexts()})`
-                    )
+                    // console.log(
+                    //     `🆕 Created new ${this.getProxyLabel(meta.proxy)} context (${this.used} active, ${this.getAvailableCount()} available, total: ${this.getTotalContexts()})`
+                    // )
 
                     return context
                 } catch (e) {
@@ -228,7 +228,7 @@ async function createBrowser(options = {}) {
 
                 try {
                     await context.close()
-                    console.log(`🗑️  Closed ${this.getProxyLabel(meta.proxy)} context${reason ? ` (${reason})` : ""}`)
+                    // console.log(`🗑️  Closed ${this.getProxyLabel(meta.proxy)} context${reason ? ` (${reason})` : ""}`)
                 } catch (e) {
                     console.error("Error closing context:", e.message)
                 }
@@ -246,9 +246,9 @@ async function createBrowser(options = {}) {
                     const usage = (this.contextUsage.get(availableContext) || 0) + 1
                     this.contextUsage.set(availableContext, usage)
 
-                    console.log(
-                        `🔄 Reusing ${proxyLabel} context (usage: ${usage}, ${this.used} active, ${this.getAvailableCount()} available)`
-                    )
+                    // console.log(
+                    //     `🔄 Reusing ${proxyLabel} context (usage: ${usage}, ${this.used} active, ${this.getAvailableCount()} available)`
+                    // )
                     return availableContext
                 }
 
@@ -262,9 +262,9 @@ async function createBrowser(options = {}) {
                     return await this.createFreshContext(normalizedProxy)
                 }
 
-                console.log(
-                    `⏳ Context pool full, waiting for ${proxyLabel} context (${this.used} active, ${this.waitingQueue.length} waiting)`
-                )
+                // console.log(
+                //     `⏳ Context pool full, waiting for ${proxyLabel} context (${this.used} active, ${this.waitingQueue.length} waiting)`
+                // )
 
                 return new Promise((resolve, reject) => {
                     let isResolved = false
@@ -344,17 +344,17 @@ async function createBrowser(options = {}) {
                     const nextUsage = (this.contextUsage.get(context) || 0) + 1
                     this.contextUsage.set(context, nextUsage)
 
-                    console.log(
-                        `🚀 Context passed to waiting ${proxyLabel} request (${this.used} active, ${this.waitingQueue.length} waiting)`
-                    )
+                    // console.log(
+                    //     `🚀 Context passed to waiting ${proxyLabel} request (${this.used} active, ${this.waitingQueue.length} waiting)`
+                    // )
                     waitingRequest.resolve(context)
                     return
                 }
 
                 this.getBucket(meta.proxyKey).push(context)
-                console.log(
-                    `♻️  ${proxyLabel} context returned to pool (usage: ${usage}, ${this.used} active, ${this.getAvailableCount()} available)`
-                )
+                // console.log(
+                //     `♻️  ${proxyLabel} context returned to pool (usage: ${usage}, ${this.used} active, ${this.getAvailableCount()} available)`
+                // )
             },
 
             async cleanup() {

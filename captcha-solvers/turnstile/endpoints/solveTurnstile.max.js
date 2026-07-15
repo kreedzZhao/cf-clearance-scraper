@@ -70,9 +70,8 @@ function solveTurnstileMin({ url, proxy, userAgent }) {
       if (!token || token.length < 10) return reject("Failed to get token");
       return resolve(token);
     } catch (e) {
-      console.log(e);
-
       if (!isResolved) {
+        console.error("Turnstile max solve failed:", e.message);
         await context.close();
         clearInterval(cl);
         reject(e.message);

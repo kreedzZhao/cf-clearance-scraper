@@ -192,8 +192,6 @@ function interceptor({ url, targetUrl, proxy, userAgent }) {
               }
             } else {
               // 状态码不正确，返回空
-              const data = await res.text();
-              console.log(`Target URL found but status code is ${res.status()}, returning ${data}`);
               isResolved = true;
               clearTimeout(timeoutHandler);
               markContextUnhealthy(`interceptor status ${res.status()}`);

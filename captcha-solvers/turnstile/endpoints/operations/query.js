@@ -260,7 +260,6 @@ async function executeInputAndClick(page, config) {
         
         // 定位并点击按钮
     try {
-      console.log(`Clicking button with xpath: ${btnXpath}`);
       await buttonElement.click();
         } catch (clickError) {
             throw new Error(`Failed to click button element: ${clickError.message}`);
@@ -383,7 +382,6 @@ async function executeInputsAndClick(page, config, options = {}) {
     }
 
     try {
-      console.log(`Clicking button with xpath: ${btnXpath}`);
       if (typeof options.beforeClick === 'function') {
         await options.beforeClick();
       }
@@ -466,7 +464,6 @@ async function executeMultiInputAndClick(page, config) {
       }
 
       try {
-        console.log(`Step ${i + 1}: Clicking button with xpath: ${btnXpath}`);
         await buttonElement.click();
       } catch (clickError) {
         throw new Error(`Step ${i + 1}: Failed to click button: ${clickError.message}`);
@@ -527,7 +524,6 @@ async function executeClick(page, config) {
         
         // 定位并点击按钮
         try {
-          console.log(`Clicking button with xpath: ${buttonXpath}`);
             await buttonElement.click();
         } catch (clickError) {
             throw new Error(`Failed to click button element: ${clickError.message}`);

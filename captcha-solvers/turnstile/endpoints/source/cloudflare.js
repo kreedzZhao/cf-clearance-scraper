@@ -88,7 +88,6 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
       page.on("request", async (request) => request.continue());
       page.on("response", async (res) => {
         try {
-          console.log(res.status(), res.url());
           if (isResolved) return;
 
           // 429 限频 直接关闭
