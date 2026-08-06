@@ -132,7 +132,7 @@ function getAkmSource({ url, proxy, operationType, operationConfig, targetUrl, u
                 }
 
                 // 其余全部 block
-                return request.abort();
+                return request.continue();
             });
 
             page.on("response", async (res) => {
@@ -175,7 +175,9 @@ function getAkmSource({ url, proxy, operationType, operationConfig, targetUrl, u
                 waitUntil: "domcontentloaded",
                 timeout: 30000,
             });
-            await page.waitForSelector(".shipment-status__key", { timeout: 30000 });
+            await page.waitForSelector(".shipment-status__key, .fdx-c-notification__body", { timeout: 30000 });
+            await page.reload();
+            await page.waitForSelector(".shipment-status__key, .fdx-c-notification__body", { timeout: 30000 });
 
             isResolved = true;
             clearTimeout(timeoutHandler);
