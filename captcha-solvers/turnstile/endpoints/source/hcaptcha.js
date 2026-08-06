@@ -1,9 +1,15 @@
 const { executePageOperation, PageOperationEarlyTermination } = require("../operations/query");
 const { applyUserAgent } = require("../../module/pageOptions");
+const https = require("https");
+const { validateHeaderName, validateHeaderValue } = require("http");
 
 const ROYAL_MAIL_ORIGIN = "https://www.royalmail.com";
 const ROYAL_MAIL_API_ORIGIN = "https://api-web.royalmail.com";
 const ROYAL_MAIL_DEBUG = process.env.DEBUG_ROYAL_MAIL_HCAPTCHA === "true";
+const ROYAL_MAIL_RESPONSE_BODY_TIMEOUT_MS = 10000;
+const ROYAL_MAIL_RETRY_GRACE_MS = 15000;
+const ROYAL_MAIL_HTTP1_FALLBACK_TIMEOUT_MS = 20000;
+const ROYAL_MAIL_MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -71,6 +77,155 @@ function requestFailureText(request) {
   return String(failure.errorText || failure.message || JSON.stringify(failure));
 }
 
+function requestHeaders(request) {
+  const headers = callMaybe(request?.headers?.bind?.(request) || request?.headers);
+  return headers && typeof headers === "object" ? headers : {};
+}
+
+function errorMessage(error) {
+  return String(error?.message || error || "unknown");
+}
+
+function cleanupInBackground(cleanup, phase) {
+  Promise.resolve()
+    .then(() => cleanup())
+    .catch((error) => {
+      royalMailLog(`${phase} cleanup failed`, errorMessage(error));
+    });
+}
+
+async function withTimeout(promise, timeoutMs, timeoutMessage) {
+  let timeoutId = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== null) clearTimeout(timeoutId);
+  }
+}
+
+function buildRoyalMailReplayHeaders(request) {
+  const blockedHeaders = new Set([
+    "connection",
+    "content-length",
+    "host",
+    "proxy-authorization",
+    "proxy-connection",
+    "transfer-encoding",
+    "upgrade",
+  ]);
+  const replayHeaders = {};
+  const entries = Object.entries(requestHeaders(request)).slice(0, 100);
+  for (const [rawName, rawValue] of entries) {
+    const name = String(rawName || "").trim().toLowerCase();
+    if (!name || name.startsWith(":") || blockedHeaders.has(name)) continue;
+
+    const value = Array.isArray(rawValue)
+      ? rawValue.map(item => String(item)).join(", ")
+      : String(rawValue ?? "");
+    if (value.length > 8192) continue;
+
+    try {
+      validateHeaderName(name);
+      validateHeaderValue(name, value);
+      replayHeaders[name] = value;
+    } catch (e) {}
+  }
+
+  // Keep the fallback body readable without adding decompression branches.
+  replayHeaders["accept-encoding"] = "identity";
+  return replayHeaders;
+}
+
+function fetchRoyalMailSummaryOverHttp1(request, summaryUrl) {
+  return new Promise((resolve) => {
+    let parsed;
+    try {
+      parsed = new URL(summaryUrl);
+      if (
+        parsed.origin !== ROYAL_MAIL_API_ORIGIN ||
+        !parsed.pathname.startsWith("/mailpieces/microsummary/v1/summary/")
+      ) {
+        throw new Error("Invalid Royal Mail summary fallback URL");
+      }
+    } catch (error) {
+      resolve({
+        status: null,
+        url: String(summaryUrl || ""),
+        ok: false,
+        requestFailed: true,
+        failure: errorMessage(error),
+        error: `Royal Mail summary HTTP/1.1 fallback failed: ${errorMessage(error)}`,
+        body: null,
+      });
+      return;
+    }
+
+    const fallbackRequest = https.request({
+      protocol: "https:",
+      hostname: parsed.hostname,
+      port: parsed.port || 443,
+      path: `${parsed.pathname}${parsed.search}`,
+      method: "GET",
+      headers: buildRoyalMailReplayHeaders(request),
+      ALPNProtocols: ["http/1.1"],
+      servername: parsed.hostname,
+      timeout: ROYAL_MAIL_HTTP1_FALLBACK_TIMEOUT_MS,
+    }, (response) => {
+      const chunks = [];
+      let receivedBytes = 0;
+
+      response.on("data", (chunk) => {
+        receivedBytes += chunk.length;
+        if (receivedBytes > ROYAL_MAIL_MAX_RESPONSE_BYTES) {
+          fallbackRequest.destroy(new Error("Royal Mail summary response exceeded size limit"));
+          return;
+        }
+        chunks.push(chunk);
+      });
+
+      response.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        let body = text;
+        try {
+          body = JSON.parse(text);
+        } catch (e) {}
+
+        const status = Number(response.statusCode || 0);
+        const ok = status >= 200 && status < 300;
+        resolve({
+          status,
+          url: parsed.href,
+          ok,
+          body,
+          ...(ok ? {} : { error: `Royal Mail summary request failed with status ${status}` }),
+        });
+      });
+    });
+
+    fallbackRequest.on("timeout", () => {
+      fallbackRequest.destroy(new Error("Royal Mail summary HTTP/1.1 fallback timed out"));
+    });
+    fallbackRequest.on("error", (error) => {
+      const failure = errorMessage(error);
+      resolve({
+        status: null,
+        url: parsed.href,
+        ok: false,
+        requestFailed: true,
+        failure,
+        error: `Royal Mail summary HTTP/1.1 fallback failed: ${failure}`,
+        body: null,
+      });
+    });
+    fallbackRequest.end();
+  });
+}
+
 function isRoyalMailTrackingUrl(value) {
   try {
     const parsed = new URL(String(value || ""));
@@ -123,7 +278,6 @@ function buildRoyalMailUrls(trackingNumber) {
   return {
     pageUrl: `${ROYAL_MAIL_ORIGIN}/track-your-item#/tracking-results/${encodeURIComponent(cleanTrackingNumber)}`,
     summaryUrl: `${ROYAL_MAIL_API_ORIGIN}/mailpieces/microsummary/v1/summary/${encodeURIComponent(cleanTrackingNumber)}`,
-    eventsUrl: `${ROYAL_MAIL_API_ORIGIN}/mailpieces/v3/${encodeURIComponent(cleanTrackingNumber)}/events`,
   };
 }
 
@@ -149,21 +303,8 @@ function isPreflightResponse(response) {
   return resourceType === "other" && (status === 204 || status === 0);
 }
 
-function isRoyalMailTargetRequestUrl(currentUrl, { summaryUrl, eventsUrl, trackingNumber }) {
-  if (isSameRequestUrl(currentUrl, summaryUrl) || isSameRequestUrl(currentUrl, eventsUrl)) {
-    return true;
-  }
-
-  try {
-    const parsed = new URL(currentUrl);
-    const isRoyalMailApi = parsed.hostname === "api-web.royalmail.com";
-    return isRoyalMailApi &&
-      parsed.pathname.includes("/mailpieces/") &&
-      parsed.pathname.includes(String(trackingNumber || ""));
-  } catch (e) {
-    return String(currentUrl || "").includes(String(trackingNumber || "")) &&
-      String(currentUrl || "").includes("mailpieces");
-  }
+function isRoyalMailTargetRequestUrl(currentUrl, { summaryUrl }) {
+  return isSameRequestUrl(currentUrl, summaryUrl);
 }
 
 async function continueRequest(request, overrides) {
@@ -175,21 +316,9 @@ async function continueRequest(request, overrides) {
   }
 }
 
-async function rewriteRoyalMailSummaryRequest(request, { summaryUrl, eventsUrl }) {
-  if (isSameRequestUrl(requestUrl(request), summaryUrl)) {
-    royalMailLog("rewrite summary request to events", {
-      from: requestUrl(request),
-      to: eventsUrl,
-    });
-    await continueRequest(request, { url: eventsUrl });
-    return true;
-  }
-  return false;
-}
-
-async function handleRoyalMailEventsResponse({
+async function handleRoyalMailSummaryResponse({
   response,
-  eventsUrl,
+  summaryUrl,
   getIsResolved,
   setResolved,
   clearTimers,
@@ -197,35 +326,65 @@ async function handleRoyalMailEventsResponse({
   resolve,
   reject,
   markContextUnhealthy,
+  responseBodyTimeoutMs = ROYAL_MAIL_RESPONSE_BODY_TIMEOUT_MS,
 }) {
   const currentUrl = responseUrl(response);
-  if (!isSameRequestUrl(currentUrl, eventsUrl)) return false;
+  if (!isSameRequestUrl(currentUrl, summaryUrl)) return false;
   if (getIsResolved()) return true;
 
   const status = responseStatus(response);
   if (isPreflightResponse(response)) {
-    royalMailLog("ignore events preflight response", {
+    royalMailLog("ignore summary preflight response", {
       status,
       url: currentUrl,
     });
     return true;
   }
 
-  royalMailLog("events response received", {
+  royalMailLog("summary response received", {
     status,
     url: currentUrl,
   });
 
-  const body = await responseBody(response);
+  // Reserve completion as soon as the summary response arrives. This
+  // prevents the navigation/page-operation timers or a requestfailed event
+  // triggered by cleanup from winning the race while the body is being read.
   setResolved(true);
   clearTimers();
-  await cleanup();
-  resolve({
-    status,
-    url: currentUrl,
-    ok: status >= 200 && status < 300,
-    body,
-  });
+
+  let body = null;
+  let bodyError = null;
+  try {
+    body = await withTimeout(
+      responseBody(response),
+      responseBodyTimeoutMs,
+      `Royal Mail summary response body timed out after ${responseBodyTimeoutMs}ms`,
+    );
+  } catch (error) {
+    bodyError = errorMessage(error);
+    markContextUnhealthy(`royal mail summary response body failed: ${bodyError}`);
+  }
+
+  const ok = status >= 200 && status < 300 && bodyError === null;
+  if (ok) {
+    resolve(body);
+  } else {
+    const result = {
+      status,
+      url: currentUrl,
+      ok: false,
+      body,
+    };
+    if (bodyError !== null) {
+      result.bodyError = bodyError;
+      result.error = `Failed to read Royal Mail summary response body: ${bodyError}`;
+    } else {
+      result.error = `Royal Mail summary request failed with status ${status}`;
+    }
+    resolve(result);
+  }
+
+  cleanupInBackground(cleanup, "summary response");
   return true;
 }
 
@@ -238,6 +397,8 @@ async function handleRoyalMailRequestFailure({
   cleanup,
   resolve,
   markContextUnhealthy,
+  deferResolution = false,
+  onDeferredFailure,
 }) {
   const currentUrl = requestUrl(request);
   const resourceType = requestResourceType(request);
@@ -252,19 +413,26 @@ async function handleRoyalMailRequestFailure({
     failure,
   });
 
-  setResolved(true);
-  clearTimers();
-  markContextUnhealthy(`royal mail target request failed: ${failure}`);
-  await cleanup();
-  resolve({
+  const result = {
     status: null,
     url: currentUrl,
     ok: false,
     requestFailed: true,
     failure,
+    error: `Royal Mail summary request failed: ${failure}`,
     resourceType,
     body: null,
-  });
+  };
+  if (deferResolution) {
+    if (typeof onDeferredFailure === "function") onDeferredFailure(result);
+    return true;
+  }
+
+  setResolved(true);
+  clearTimers();
+  markContextUnhealthy(`royal mail target request failed: ${failure}`);
+  resolve(result);
+  cleanupInBackground(cleanup, "target request failure");
   return true;
 }
 
@@ -472,7 +640,6 @@ function getHcapSource({ url, proxy, operationType, operationConfig, userAgent, 
         url,
         trackingNumber: royalMailTrackingNumber,
         summaryUrl: royalMailUrls.summaryUrl,
-        eventsUrl: royalMailUrls.eventsUrl,
       });
     }
 
@@ -482,6 +649,9 @@ function getHcapSource({ url, proxy, operationType, operationConfig, userAgent, 
     let contextClosed = false;
     let shouldReuseContext = true;
     let discardReason = "";
+    let royalMailLastFailure = null;
+    let royalMailFailureTimeout = null;
+    let royalMailFallbackInFlight = false;
 
     const markContextUnhealthy = (reason) => {
       shouldReuseContext = false;
@@ -522,14 +692,45 @@ function getHcapSource({ url, proxy, operationType, operationConfig, userAgent, 
 
     const clearTimers = () => {
       clearTimeout(timeoutHandler);
+      if (royalMailFailureTimeout) {
+        clearTimeout(royalMailFailureTimeout);
+        royalMailFailureTimeout = null;
+      }
       if (pageOperationTimeout) {
         clearTimeout(pageOperationTimeout);
         pageOperationTimeout = null;
       }
     };
 
+    const finishRoyalMailFailure = (reason) => {
+      if (!isRoyalMail || isResolved || !royalMailLastFailure) return false;
+      isResolved = true;
+      clearTimers();
+      markContextUnhealthy(reason);
+      resolve({
+        ...royalMailLastFailure,
+        retryExhausted: true,
+      });
+      cleanupInBackground(cleanup, "summary retry exhausted");
+      return true;
+    };
+
+    const deferRoyalMailFailure = (failureResult) => {
+      if (!isRoyalMail || isResolved) return;
+      royalMailLastFailure = failureResult;
+      if (royalMailFailureTimeout) clearTimeout(royalMailFailureTimeout);
+      royalMailFailureTimeout = setTimeout(() => {
+        finishRoyalMailFailure("royal mail summary retries exhausted");
+      }, ROYAL_MAIL_RETRY_GRACE_MS);
+      royalMailLog("summary failure deferred for page retry", {
+        failure: failureResult.failure || failureResult.error,
+        retryGraceMs: ROYAL_MAIL_RETRY_GRACE_MS,
+      });
+    };
+
     const timeoutHandler = setTimeout(async () => {
       if (!isResolved) {
+        if (finishRoyalMailFailure("royal mail summary timeout after retries")) return;
         isResolved = true;
         markContextUnhealthy("hcaptcha source timeout");
         await cleanup();
@@ -570,7 +771,13 @@ function getHcapSource({ url, proxy, operationType, operationConfig, userAgent, 
         });
       }
 
-      await page.setRequestInterception(true);
+      // Royal Mail now follows the site's original summary request without
+      // URL rewriting. Enabling Puppeteer interception just to call
+      // request.continue() can make its HTTP/2 XHR fail with net::ERR_FAILED,
+      // so only enable interception for the legacy non-Royal-Mail flow.
+      if (!isRoyalMail) {
+        await page.setRequestInterception(true);
+      }
       const allow = [
         // main page + config
         /^https:\/\/www\.royalmail\.com\/track-your-item(?:#.*)?$/,
@@ -601,7 +808,7 @@ function getHcapSource({ url, proxy, operationType, operationConfig, userAgent, 
             url: currentUrl,
           });
         }
-        if (isRoyalMail && await rewriteRoyalMailSummaryRequest(req, royalMailUrls)) return;
+        if (isRoyalMail) return;
         if (allow.some(r => r.test(currentUrl))) return continueRequest(req);
         // 兜底：允许同源 XHR/Fetch (必要时)
         const resourceType = requestResourceType(req);
@@ -630,7 +837,8 @@ function getHcapSource({ url, proxy, operationType, operationConfig, userAgent, 
             });
           }
 
-          await handleRoyalMailRequestFailure({
+          let deferredFailure = null;
+          const handled = await handleRoyalMailRequestFailure({
             request: req,
             target: {
               ...royalMailUrls,
@@ -642,7 +850,47 @@ function getHcapSource({ url, proxy, operationType, operationConfig, userAgent, 
             cleanup,
             resolve,
             markContextUnhealthy,
+            deferResolution: true,
+            onDeferredFailure: (failureResult) => {
+              deferredFailure = failureResult;
+            },
           });
+          if (!handled || !deferredFailure || isResolved) return;
+
+          const isRetryableTransportFailure = /ERR_HTTP2_PROTOCOL_ERROR|ERR_FAILED|ERR_ABORTED/i.test(
+            deferredFailure.failure || "",
+          );
+          if (isRetryableTransportFailure && royalMailFallbackInFlight) return;
+
+          const canUseHttp1Fallback =
+            !proxy?.host &&
+            isRetryableTransportFailure;
+          if (!canUseHttp1Fallback) {
+            deferRoyalMailFailure(deferredFailure);
+            return;
+          }
+
+          royalMailFallbackInFlight = true;
+          royalMailLog("retry summary over HTTP/1.1", {
+            url: royalMailUrls.summaryUrl,
+          });
+          const fallbackResult = await fetchRoyalMailSummaryOverHttp1(
+            req,
+            royalMailUrls.summaryUrl,
+          );
+          royalMailFallbackInFlight = false;
+          if (isResolved) return;
+
+          if (fallbackResult.ok) {
+            isResolved = true;
+            clearTimers();
+            markContextUnhealthy("royal mail browser HTTP/2 summary request failed");
+            resolve(fallbackResult.body);
+            cleanupInBackground(cleanup, "HTTP/1.1 summary fallback success");
+            return;
+          }
+
+          deferRoyalMailFailure(fallbackResult);
         } catch (e) {
           royalMailLog("request failed handler error", e.message);
         }
@@ -663,9 +911,9 @@ function getHcapSource({ url, proxy, operationType, operationConfig, userAgent, 
             }
           }
           if (isRoyalMail) {
-            const handled = await handleRoyalMailEventsResponse({
+            const handled = await handleRoyalMailSummaryResponse({
               response: res,
-              eventsUrl: royalMailUrls.eventsUrl,
+              summaryUrl: royalMailUrls.summaryUrl,
               getIsResolved: () => isResolved,
               setResolved: (value) => { isResolved = value; },
               clearTimers,
@@ -808,12 +1056,45 @@ function getHcapSource({ url, proxy, operationType, operationConfig, userAgent, 
             await cleanup();
             resolve(html);
           }
-        } catch (e) {}
+        } catch (e) {
+          const failedResponseUrl = responseUrl(res);
+          if (
+            isRoyalMail &&
+            !isResolved &&
+            isSameRequestUrl(failedResponseUrl, royalMailUrls.summaryUrl)
+          ) {
+            const failure = errorMessage(e);
+            isResolved = true;
+            clearTimers();
+            markContextUnhealthy(`royal mail summary response handler failed: ${failure}`);
+            resolve({
+              status: responseStatus(res),
+              url: failedResponseUrl,
+              ok: false,
+              error: `Failed to handle Royal Mail summary response: ${failure}`,
+              body: null,
+            });
+            cleanupInBackground(cleanup, "summary response handler failure");
+          } else if (isRoyalMail) {
+            royalMailLog("non-summary response handler error", {
+              url: failedResponseUrl,
+              error: errorMessage(e),
+            });
+          }
+        }
       });
-      await page.goto(url, {
-        waitUntil: "domcontentloaded",
-        timeout: 30000,
-      });
+      try {
+        await page.goto(url, {
+          waitUntil: "domcontentloaded",
+          timeout: 30000,
+        });
+      } catch (navigationError) {
+        if (!isRoyalMail) throw navigationError;
+        royalMailLog("goto did not complete; continue page workflow", {
+          error: errorMessage(navigationError),
+          pageUrl: page?.url?.() || url,
+        });
+      }
       if (isRoyalMail) {
         royalMailLog("goto completed", { url });
         await logRoyalMailPageState(page, "after goto");
@@ -835,15 +1116,16 @@ function getHcapSource({ url, proxy, operationType, operationConfig, userAgent, 
 
       if (isResolved) return;
       if (isRoyalMail) {
-        royalMailLog("waiting for events response", {
+        royalMailLog("waiting for summary response", {
           timeoutMs: 120000,
-          eventsUrl: royalMailUrls.eventsUrl,
+          summaryUrl: royalMailUrls.summaryUrl,
         });
       }
 
       // 最大超时时间 2 min
       pageOperationTimeout = setTimeout(async () => {
         if (!isResolved) {
+          if (finishRoyalMailFailure("royal mail summary timeout after retries")) return;
           isResolved = true;
           clearTimers();
           markContextUnhealthy("hcaptcha page operation timeout");
@@ -869,7 +1151,7 @@ module.exports = getHcapSource;
 module.exports.isRoyalMailTrackingUrl = isRoyalMailTrackingUrl;
 module.exports.parseRoyalMailTrackingNumber = parseRoyalMailTrackingNumber;
 module.exports.buildRoyalMailUrls = buildRoyalMailUrls;
-module.exports.rewriteRoyalMailSummaryRequest = rewriteRoyalMailSummaryRequest;
-module.exports.handleRoyalMailEventsResponse = handleRoyalMailEventsResponse;
+module.exports.buildRoyalMailReplayHeaders = buildRoyalMailReplayHeaders;
+module.exports.handleRoyalMailSummaryResponse = handleRoyalMailSummaryResponse;
 module.exports.handleRoyalMailRequestFailure = handleRoyalMailRequestFailure;
 module.exports.triggerRoyalMailTracking = triggerRoyalMailTracking;
