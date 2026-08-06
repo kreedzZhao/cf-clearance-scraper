@@ -28,10 +28,11 @@ describe("Royal Mail hcaptcha source helpers", () => {
     })).toBe("AB123456789GB");
   });
 
-  test("builds Royal Mail summary URL", () => {
+  test("builds Royal Mail summary and events URLs", () => {
     expect(hcaptchaSource.buildRoyalMailUrls("YS357798268GB")).toEqual({
       pageUrl: "https://www.royalmail.com/track-your-item#/tracking-results/YS357798268GB",
       summaryUrl: "https://api-web.royalmail.com/mailpieces/microsummary/v1/summary/YS357798268GB",
+      eventsUrl: "https://api-web.royalmail.com/mailpieces/v3/YS357798268GB/events",
     });
   });
 
@@ -51,6 +52,105 @@ describe("Royal Mail hcaptcha source helpers", () => {
       origin: "https://www.royalmail.com",
       "x-request-context": "validated-test-value",
       "accept-encoding": "identity",
+    });
+  });
+
+  test("uses wreq browser impersonation for the Royal Mail events request", async () => {
+    const urls = hcaptchaSource.buildRoyalMailUrls("YS357798268GB");
+    const payload = { events: [{ eventCode: "EVKOP" }] };
+    const fetchImpl = jest.fn(async () => ({
+      status: 200,
+      text: async () => JSON.stringify(payload),
+    }));
+
+    const result = await hcaptchaSource.fetchRoyalMailTargetOverWreq(
+      {
+        headers: () => ({
+          accept: "application/json",
+          "accept-encoding": "gzip, deflate, br, zstd",
+          connection: "keep-alive",
+          origin: "https://www.royalmail.com",
+          "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/134.0.0.0 Safari/537.36",
+          "x-request-context": "validated-test-value",
+        }),
+      },
+      urls.eventsUrl,
+      "events",
+      fetchImpl,
+    );
+
+    expect(fetchImpl).toHaveBeenCalledWith(urls.eventsUrl, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        "accept-encoding": "gzip, deflate, br, zstd",
+        origin: "https://www.royalmail.com",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/134.0.0.0 Safari/537.36",
+        "x-request-context": "validated-test-value",
+      },
+      browser: "chrome_134",
+      os: "windows",
+      timeout: 20000,
+      redirect: "error",
+      disableDefaultHeaders: true,
+    });
+    expect(result).toEqual({
+      status: 200,
+      url: urls.eventsUrl,
+      ok: true,
+      body: payload,
+    });
+  });
+
+  test("matches the wreq profile to the intercepted Chromium user agent", () => {
+    expect(hcaptchaSource.selectRoyalMailWreqProfile({
+      headers: () => ({
+        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chromium/139.0.0.0 Safari/537.36",
+      }),
+    })).toEqual({ browser: "chrome_139", os: "macos" });
+  });
+
+  test("rejects non-Royal-Mail targets before calling wreq", async () => {
+    const fetchImpl = jest.fn();
+
+    const result = await hcaptchaSource.fetchRoyalMailTargetOverWreq(
+      { headers: () => ({ accept: "application/json" }) },
+      "https://example.com/mailpieces/v3/YS357798268GB/events",
+      "events",
+      fetchImpl,
+    );
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({
+      status: null,
+      ok: false,
+      requestFailed: true,
+      failure: "Invalid Royal Mail events URL",
+      body: null,
+    }));
+  });
+
+  test("returns wreq transport failures without waiting for the browser", async () => {
+    const urls = hcaptchaSource.buildRoyalMailUrls("YS357798268GB");
+    const fetchImpl = jest.fn(async () => {
+      throw new Error("TLS transport failed");
+    });
+
+    const result = await hcaptchaSource.fetchRoyalMailTargetOverWreq(
+      { headers: () => ({ accept: "application/json" }) },
+      urls.eventsUrl,
+      "events",
+      fetchImpl,
+    );
+
+    expect(result).toEqual({
+      status: null,
+      url: urls.eventsUrl,
+      ok: false,
+      requestFailed: true,
+      failure: "TLS transport failed",
+      error: "Royal Mail events wreq request failed: TLS transport failed",
+      body: null,
     });
   });
 
@@ -81,6 +181,37 @@ describe("Royal Mail hcaptcha source helpers", () => {
     expect(resolve).toHaveBeenCalledWith(payload);
     expect(reject).not.toHaveBeenCalled();
     expect(cleanup).toHaveBeenCalled();
+  });
+
+  test("captures an events response reported under the original rewritten summary URL", async () => {
+    const urls = hcaptchaSource.buildRoyalMailUrls("YS357798268GB");
+    const payload = { events: [{ eventCode: "EVKOP" }] };
+    const resolve = jest.fn();
+
+    const handled = await hcaptchaSource.handleRoyalMailSummaryResponse({
+      response: {
+        url: () => urls.summaryUrl,
+        status: () => 200,
+        request: () => ({
+          method: () => "GET",
+          resourceType: () => "xhr",
+        }),
+        json: jest.fn(async () => payload),
+      },
+      summaryUrl: urls.eventsUrl,
+      alternateUrl: urls.summaryUrl,
+      getIsResolved: () => false,
+      setResolved: jest.fn(),
+      clearTimers: jest.fn(),
+      cleanup: jest.fn(async () => undefined),
+      resolve,
+      reject: jest.fn(),
+      markContextUnhealthy: jest.fn(),
+      targetName: "events",
+    });
+
+    expect(handled).toBe(true);
+    expect(resolve).toHaveBeenCalledWith(payload);
   });
 
   test("ignores summary preflight responses", async () => {

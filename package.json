@@ -49,6 +49,7 @@
     "playwright": "^1.59.1",
     "puppeteer-real-browser": "^1.4.4",
     "supertest": "^7.0.0",
+    "wreq-js": "^2.3.1",
     "zx": "^8.1.7"
   }
 }
