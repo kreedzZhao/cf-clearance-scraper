@@ -11,6 +11,8 @@ const ROYAL_MAIL_RESPONSE_BODY_TIMEOUT_MS = 10000;
 const ROYAL_MAIL_RETRY_GRACE_MS = 15000;
 const ROYAL_MAIL_HTTP1_FALLBACK_TIMEOUT_MS = 20000;
 const ROYAL_MAIL_WREQ_TIMEOUT_MS = 20000;
+const ROYAL_MAIL_REFRESH_TIMEOUT_MS = 30000;
+const ROYAL_MAIL_MAX_REFRESH_RETRIES = 1;
 const ROYAL_MAIL_MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const ROYAL_MAIL_WREQ_CHROME_PROFILES = getWreqProfiles()
   .filter(profile => /^chrome_\d+$/.test(profile))
@@ -89,6 +91,15 @@ function requestHeaders(request) {
 
 function errorMessage(error) {
   return String(error?.message || error || "unknown");
+}
+
+function isRetryableRoyalMailTransportFailure(failure) {
+  const message = typeof failure === "object"
+    ? failure?.failure || failure?.error
+    : failure;
+  return /ERR_HTTP2_PROTOCOL_ERROR|ERR_FAILED|ERR_ABORTED|http2|HTTP\/2|stream error/i.test(
+    String(message || ""),
+  );
 }
 
 function cleanupInBackground(cleanup, phase) {
@@ -682,6 +693,35 @@ async function ensureRoyalMailTrackingHash(page, trackingNumber) {
   }
 }
 
+async function restartRoyalMailTrackingRoute(page, trackingNumber) {
+  try {
+    const result = await page.evaluate(async (number) => {
+      const cleanNumber = String(number || "").trim();
+      if (!/^[A-Za-z0-9]{6,40}$/.test(cleanNumber)) {
+        return { restarted: false, reason: "invalid tracking number" };
+      }
+
+      const targetHash = `#/tracking-results/${encodeURIComponent(cleanNumber)}`;
+      const before = window.location.hash;
+      if (before === targetHash) {
+        window.location.hash = "#/";
+        await new Promise(resolve => setTimeout(resolve, 150));
+      }
+      window.location.hash = targetHash;
+      return {
+        restarted: true,
+        before,
+        after: window.location.hash,
+      };
+    }, trackingNumber);
+    royalMailLog("restart tracking route", result);
+    return Boolean(result?.restarted);
+  } catch (error) {
+    royalMailLog("restart tracking route failed", errorMessage(error));
+    return false;
+  }
+}
+
 async function triggerRoyalMailTracking(page, trackingNumber) {
   try {
     const submitted = await page.evaluate((value) => {
@@ -793,8 +833,13 @@ function getHcapSource({ url, proxy, operationType, operationConfig, userAgent, 
     let discardReason = "";
     let royalMailLastFailure = null;
     let royalMailWreqFailure = null;
+    let royalMailFirstBrowserFailure = null;
     let royalMailFailureTimeout = null;
     let royalMailFallbackInFlight = false;
+    let royalMailRefreshInFlight = false;
+    let royalMailRefreshRetryCount = 0;
+    let royalMailSummaryRequestCount = 0;
+    let royalMailPendingRefreshFailure = null;
 
     const markContextUnhealthy = (reason) => {
       shouldReuseContext = false;
@@ -869,6 +914,91 @@ function getHcapSource({ url, proxy, operationType, operationConfig, userAgent, 
         failure: failureResult.failure || failureResult.error,
         retryGraceMs: ROYAL_MAIL_RETRY_GRACE_MS,
       });
+    };
+
+    const refreshRoyalMailPageOnce = async (failureResult) => {
+      if (
+        !isRoyalMail ||
+        isResolved ||
+        !page ||
+        royalMailRefreshInFlight ||
+        royalMailRefreshRetryCount >= ROYAL_MAIL_MAX_REFRESH_RETRIES ||
+        !isRetryableRoyalMailTransportFailure(failureResult)
+      ) {
+        return { attempted: false, refreshed: false };
+      }
+
+      royalMailRefreshInFlight = true;
+      royalMailRefreshRetryCount += 1;
+      royalMailFirstBrowserFailure ||= failureResult;
+      royalMailLastFailure = failureResult;
+      if (royalMailFailureTimeout) {
+        clearTimeout(royalMailFailureTimeout);
+        royalMailFailureTimeout = null;
+      }
+
+      royalMailLog("refresh page before events retry", {
+        attempt: royalMailRefreshRetryCount + 1,
+        failure: failureResult.failure || failureResult.error,
+      });
+
+      try {
+        const summaryRequestCountBeforeRefresh = royalMailSummaryRequestCount;
+        await page.reload({
+          waitUntil: "domcontentloaded",
+          timeout: ROYAL_MAIL_REFRESH_TIMEOUT_MS,
+        });
+        if (!isResolved) await suppressRoyalMailCookieOverlay(page);
+        if (!isResolved) await restartRoyalMailTrackingRoute(page, royalMailTrackingNumber);
+        if (!isResolved) await sleep(500);
+        if (!isResolved) await ensureRoyalMailTrackingHash(page, royalMailTrackingNumber);
+        if (!isResolved) {
+          const automaticRequestDeadline = Date.now() + 10000;
+          while (
+            !isResolved &&
+            royalMailSummaryRequestCount <= summaryRequestCountBeforeRefresh &&
+            Date.now() < automaticRequestDeadline
+          ) {
+            await sleep(100);
+          }
+        }
+        if (
+          !isResolved &&
+          royalMailSummaryRequestCount <= summaryRequestCountBeforeRefresh
+        ) {
+          await triggerRoyalMailTracking(page, royalMailTrackingNumber);
+        }
+        if (!isResolved) await logRoyalMailPageState(page, "after refresh retry setup");
+        royalMailLog("page refresh completed; wait for browser events retry", {
+          attempt: royalMailRefreshRetryCount + 1,
+        });
+        return { attempted: true, refreshed: true };
+      } catch (error) {
+        const failure = errorMessage(error);
+        royalMailLog("page refresh failed", { failure });
+        return { attempted: true, refreshed: false, failure };
+      } finally {
+        royalMailRefreshInFlight = false;
+      }
+    };
+
+    const resolveRoyalMailTransportFailure = (failureResult, extra = {}) => {
+      if (isResolved) return;
+      isResolved = true;
+      clearTimers();
+      markContextUnhealthy("royal mail events retries failed");
+      resolve({
+        ...failureResult,
+        url: royalMailUrls.eventsUrl,
+        attempts: royalMailRefreshRetryCount + 1,
+        refreshed: royalMailRefreshRetryCount > 0,
+        ...(royalMailFirstBrowserFailure ? {
+          firstBrowserFailure:
+            royalMailFirstBrowserFailure.failure || royalMailFirstBrowserFailure.error,
+        } : {}),
+        ...extra,
+      });
+      cleanupInBackground(cleanup, "royal mail events retries failed");
     };
 
     const timeoutHandler = setTimeout(async () => {
@@ -950,7 +1080,15 @@ function getHcapSource({ url, proxy, operationType, operationConfig, userAgent, 
             return continueRequest(req);
           }
 
-          if (requestMethod(req) === "GET" && !proxy?.host) {
+          if (requestMethod(req) === "GET") {
+            royalMailSummaryRequestCount += 1;
+          }
+
+          if (
+            requestMethod(req) === "GET" &&
+            !proxy?.host &&
+            !royalMailWreqFailure
+          ) {
             royalMailLog("send rewritten events request over wreq", {
               from: currentUrl,
               to: royalMailUrls.eventsUrl,
@@ -1061,23 +1199,61 @@ function getHcapSource({ url, proxy, operationType, operationConfig, userAgent, 
           });
           if (!handled || !deferredFailure || isResolved) return;
 
-          if (royalMailWreqFailure) {
-            isResolved = true;
-            clearTimers();
-            markContextUnhealthy("royal mail wreq and browser events requests failed");
-            resolve({
-              ...deferredFailure,
-              url: royalMailUrls.eventsUrl,
-              browserFailure: deferredFailure.failure || deferredFailure.error,
-              wreqFailure: royalMailWreqFailure.failure || royalMailWreqFailure.error,
-            });
-            cleanupInBackground(cleanup, "wreq and browser events requests failed");
+          if (royalMailRefreshInFlight) {
+            royalMailPendingRefreshFailure = deferredFailure;
             return;
           }
 
-          const isRetryableTransportFailure = /ERR_HTTP2_PROTOCOL_ERROR|ERR_FAILED|ERR_ABORTED/i.test(
-            deferredFailure.failure || "",
+          const isRetryableTransportFailure = isRetryableRoyalMailTransportFailure(
+            deferredFailure,
           );
+          if (
+            isRetryableTransportFailure &&
+            royalMailRefreshRetryCount < ROYAL_MAIL_MAX_REFRESH_RETRIES
+          ) {
+            const refreshResult = await refreshRoyalMailPageOnce(deferredFailure);
+            if (isResolved) return;
+            if (refreshResult.refreshed) {
+              if (royalMailPendingRefreshFailure) {
+                const pendingFailure = royalMailPendingRefreshFailure;
+                royalMailPendingRefreshFailure = null;
+                resolveRoyalMailTransportFailure(pendingFailure, {
+                  browserFailure: pendingFailure.failure || pendingFailure.error,
+                  ...(royalMailWreqFailure ? {
+                    wreqFailure:
+                      royalMailWreqFailure.failure || royalMailWreqFailure.error,
+                  } : {}),
+                });
+              }
+              return;
+            }
+            resolveRoyalMailTransportFailure(deferredFailure, {
+              ...(royalMailWreqFailure ? {
+                wreqFailure: royalMailWreqFailure.failure || royalMailWreqFailure.error,
+              } : {}),
+              refreshFailure: refreshResult.failure || "Royal Mail page refresh failed",
+            });
+            return;
+          }
+
+          if (royalMailWreqFailure) {
+            resolveRoyalMailTransportFailure(deferredFailure, {
+              browserFailure: deferredFailure.failure || deferredFailure.error,
+              wreqFailure: royalMailWreqFailure.failure || royalMailWreqFailure.error,
+            });
+            return;
+          }
+
+          if (
+            isRetryableTransportFailure &&
+            royalMailRefreshRetryCount >= ROYAL_MAIL_MAX_REFRESH_RETRIES
+          ) {
+            resolveRoyalMailTransportFailure(deferredFailure, {
+              browserFailure: deferredFailure.failure || deferredFailure.error,
+            });
+            return;
+          }
+
           if (isRetryableTransportFailure && royalMailFallbackInFlight) return;
 
           const canUseHttp1Fallback =
@@ -1307,17 +1483,52 @@ function getHcapSource({ url, proxy, operationType, operationConfig, userAgent, 
           }
         }
       });
-      try {
-        await page.goto(url, {
-          waitUntil: "domcontentloaded",
-          timeout: 30000,
+      let navigationFailure = null;
+      const navigationAttempts = isRoyalMail ? 2 : 1;
+      for (let attempt = 1; attempt <= navigationAttempts; attempt += 1) {
+        try {
+          await page.goto(url, {
+            waitUntil: "domcontentloaded",
+            timeout: 30000,
+          });
+          navigationFailure = null;
+          break;
+        } catch (navigationError) {
+          if (!isRoyalMail) throw navigationError;
+          navigationFailure = navigationError;
+          const currentPageUrl = page?.url?.() || "about:blank";
+          royalMailLog("goto did not complete", {
+            attempt,
+            error: errorMessage(navigationError),
+            pageUrl: currentPageUrl,
+          });
+          if (currentPageUrl !== "about:blank" || attempt >= navigationAttempts) {
+            break;
+          }
+          await sleep(500);
+        }
+      }
+      if (
+        isRoyalMail &&
+        navigationFailure &&
+        (page?.url?.() || "about:blank") === "about:blank"
+      ) {
+        const failure = errorMessage(navigationFailure);
+        isResolved = true;
+        clearTimers();
+        markContextUnhealthy("royal mail cold-start navigation failed after retry");
+        resolve({
+          status: null,
+          url,
+          ok: false,
+          requestFailed: true,
+          failure,
+          error: `Royal Mail page navigation failed after 2 attempts: ${failure}`,
+          attempts: 2,
+          body: null,
         });
-      } catch (navigationError) {
-        if (!isRoyalMail) throw navigationError;
-        royalMailLog("goto did not complete; continue page workflow", {
-          error: errorMessage(navigationError),
-          pageUrl: page?.url?.() || url,
-        });
+        cleanupInBackground(cleanup, "royal mail navigation retries failed");
+        return;
       }
       if (isRoyalMail) {
         royalMailLog("goto completed", { url });
@@ -1379,6 +1590,8 @@ module.exports.buildRoyalMailReplayHeaders = buildRoyalMailReplayHeaders;
 module.exports.buildRoyalMailWreqHeaders = buildRoyalMailWreqHeaders;
 module.exports.selectRoyalMailWreqProfile = selectRoyalMailWreqProfile;
 module.exports.fetchRoyalMailTargetOverWreq = fetchRoyalMailTargetOverWreq;
+module.exports.isRetryableRoyalMailTransportFailure = isRetryableRoyalMailTransportFailure;
 module.exports.handleRoyalMailSummaryResponse = handleRoyalMailSummaryResponse;
 module.exports.handleRoyalMailRequestFailure = handleRoyalMailRequestFailure;
+module.exports.restartRoyalMailTrackingRoute = restartRoyalMailTrackingRoute;
 module.exports.triggerRoyalMailTracking = triggerRoyalMailTracking;

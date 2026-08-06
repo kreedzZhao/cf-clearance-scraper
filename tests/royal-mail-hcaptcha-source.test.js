@@ -154,6 +154,18 @@ describe("Royal Mail hcaptcha source helpers", () => {
     });
   });
 
+  test("recognizes Royal Mail cold-start transport failures for one refresh retry", () => {
+    expect(hcaptchaSource.isRetryableRoyalMailTransportFailure({
+      failure: "net::ERR_HTTP2_PROTOCOL_ERROR",
+    })).toBe(true);
+    expect(hcaptchaSource.isRetryableRoyalMailTransportFailure(
+      "http2 stream error received",
+    )).toBe(true);
+    expect(hcaptchaSource.isRetryableRoyalMailTransportFailure({
+      error: "Royal Mail events request failed with status 403",
+    })).toBe(false);
+  });
+
   test("resolves successful summary responses as JSON", async () => {
     const urls = hcaptchaSource.buildRoyalMailUrls("YS357798268GB");
     const payload = { mailpieces: [{ status: "delivered" }] };
@@ -580,6 +592,25 @@ describe("Royal Mail hcaptcha source helpers", () => {
 
     expect(result).toBe(false);
     expect(searchButtonClicked).toBe(false);
+    expect(page.evaluate).toHaveBeenCalledTimes(1);
+  });
+
+  test("restarts the Royal Mail SPA tracking route after a refresh", async () => {
+    const page = {
+      evaluate: jest.fn(async (fn, trackingNumber) => {
+        expect(trackingNumber).toBe("GV398892427GB");
+        return {
+          restarted: true,
+          before: "#/tracking-results/GV398892427GB",
+          after: "#/tracking-results/GV398892427GB",
+        };
+      }),
+    };
+
+    await expect(hcaptchaSource.restartRoyalMailTrackingRoute(
+      page,
+      "GV398892427GB",
+    )).resolves.toBe(true);
     expect(page.evaluate).toHaveBeenCalledTimes(1);
   });
 });
