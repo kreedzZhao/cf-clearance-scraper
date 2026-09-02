@@ -1,7 +1,30 @@
 const { executePageOperation, PageOperationEarlyTermination } = require("../operations/query.js");
 const { applyUserAgent } = require("../../module/pageOptions");
+const { matchesResponseUrl, normalizePatterns } = require("../../module/responseMatch");
 
-function getCfSource({ url, proxy, operationType, operationConfig, targetContent, userAgent }) {
+const DEFAULT_CAPTURE_NOT_FOUND_STATUS = [404];
+
+function normalizeStatusList(value, fallback) {
+  if (value === undefined || value === null) return fallback;
+  const list = Array.isArray(value) ? value : [value];
+  const parsed = list
+    .map((item) => Number(item))
+    .filter((item) => Number.isInteger(item));
+  return parsed.length > 0 ? parsed : fallback;
+}
+
+function getRequestMethod(res) {
+  try {
+    const request = typeof res.request === "function" ? res.request() : null;
+    if (!request) return "";
+    const method = typeof request.method === "function" ? request.method() : request.method;
+    return String(method || "").toUpperCase();
+  } catch (e) {
+    return "";
+  }
+}
+
+function getCfSource({ url, proxy, operationType, operationConfig, targetContent, userAgent, captureUrl, captureNotFoundStatus }) {
   return new Promise(async (resolve, reject) => {
     if (!url) return reject("Missing url parameter");
 
@@ -12,6 +35,21 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
     let shouldReuseContext = true;
     let discardReason = "";
 
+    // 捕获通道：数据不在文档 HTML 里、而是由页面异步接口返回时使用
+    const capturePatterns = normalizePatterns(captureUrl);
+    const captureEnabled = capturePatterns.length > 0;
+    const captureNotFoundStatusList = normalizeStatusList(
+      captureNotFoundStatus,
+      DEFAULT_CAPTURE_NOT_FOUND_STATUS
+    );
+    let lastCaptureFailure = null;
+    let operationTimeoutHandler = null;
+
+    const describeCaptureFailure = () =>
+      lastCaptureFailure
+        ? ` (last capture response: HTTP ${lastCaptureFailure.status} ${lastCaptureFailure.url})`
+        : "";
+
     const markContextUnhealthy = (reason) => {
       shouldReuseContext = false;
       if (!discardReason) {
@@ -20,6 +58,11 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
     };
     
     const cleanup = async () => {
+      // 已有结论后不再需要兜底定时器，避免请求结束后仍挂着 2 分钟的 timer
+      if (operationTimeoutHandler) {
+        clearTimeout(operationTimeoutHandler);
+        operationTimeoutHandler = null;
+      }
       if (page) {
         try {
           await page.close().catch(() => {});
@@ -49,7 +92,7 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
         isResolved = true;
         markContextUnhealthy("cloudflare source timeout");
         await cleanup();
-        reject("Timeout Error - cf_clearance cookie not obtained");
+        reject("Timeout Error - cf_clearance cookie not obtained" + describeCaptureFailure());
       }
     }, global.timeOut || 120000);
 
@@ -81,8 +124,10 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
         });
 
       const isMultiStepOperation = operationType === 'MULTI_INPUT_AND_CLICK';
+      const requiresOperation = Boolean(operationType && operationConfig);
       let operationStarted = false;
       let operationDone = !isMultiStepOperation; // 单步操作无需等待，多步操作需等操作完成
+      let operationCompleted = !requiresOperation; // 捕获通道用：页面操作是否已真正执行完
 
       await page.setRequestInterception(true);
       page.on("request", async (request) => request.continue());
@@ -90,10 +135,14 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
         try {
           if (isResolved) return;
 
+          const responseUrl = res.url();
+          const isDocumentResponse = responseUrl.includes(url);
+          const isCaptureResponse = captureEnabled && matchesResponseUrl(responseUrl, capturePatterns);
+
           // 429 限频 直接关闭
           if (
             [429].includes(res.status()) &&
-            res.url().includes(url)
+            isDocumentResponse
           ) {
             const cookies = await page.cookies();
             await page.deleteCookie(...cookies);
@@ -111,7 +160,7 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
           // 403 禁止访问 直接关闭
           if (
             [403].includes(res.status()) &&
-            res.url().includes(url) &&
+            isDocumentResponse &&
             !(await res.text()).includes("Just a moment...")
           ) {
             isResolved = true;
@@ -124,7 +173,7 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
 
           if (
             [200, 302].includes(res.status()) &&
-            res.url().includes(url)
+            isDocumentResponse
           ) {
             const html = await res.text();
 
@@ -144,6 +193,7 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
               try {
                 await executePageOperation(page, operationType, operationConfig);
                 operationDone = true;
+                operationCompleted = true;
               } catch (operationError) {
                 if (operationError instanceof PageOperationEarlyTermination || operationError?.isPageOperationEarlyTermination) {
                   isResolved = true;
@@ -166,6 +216,12 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
               }
             }
 
+            // 配置了捕获目标且文档本身不是捕获目标时，
+            // 文档响应只负责 CF 状态判定与触发页面操作，结果一律来自捕获通道
+            if (captureEnabled && !isCaptureResponse) {
+              return;
+            }
+
             // 多步骤操作进行中，跳过中间响应
             if (!operationDone) {
               return;
@@ -183,6 +239,48 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
             clearTimeout(timeoutHandler);
             await cleanup();
             resolve(html);
+            return;
+          }
+
+          // 捕获通道：命中 captureUrl 的异步接口响应
+          if (isCaptureResponse && !isDocumentResponse) {
+            // 跨域 XHR 的 CORS 预检没有响应体，忽略
+            if (getRequestMethod(res) === "OPTIONS") return;
+
+            // 需要页面操作的场景，忽略操作完成前的中间请求
+            if (!operationCompleted) return;
+
+            const status = res.status();
+
+            if (captureNotFoundStatusList.includes(status)) {
+              isResolved = true;
+              clearTimeout(timeoutHandler);
+              await cleanup();
+              resolve(`Tracking not found`);
+              return;
+            }
+
+            if (status < 200 || status >= 300) {
+              // 接口可能在拿到 cf_clearance 之前先失败一次，前端会自行重试，
+              // 这里只记录状态用于超时诊断，不提前终止
+              lastCaptureFailure = { status, url: responseUrl };
+              return;
+            }
+
+            const body = await res.text();
+
+            if (targetContent) {
+              const includes = Array.isArray(targetContent) ? targetContent : [targetContent];
+              if (!includes.some(str => body.includes(str))) {
+                return;
+              }
+            }
+
+            isResolved = true;
+            clearTimeout(timeoutHandler);
+            await cleanup();
+            resolve(body);
+            return;
           }
         } catch (e) {}
       });
@@ -192,13 +290,13 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
       });
 
       // 最大超时时间 2 min
-      setTimeout(async () => {
+      operationTimeoutHandler = setTimeout(async () => {
         if (!isResolved) {
           isResolved = true;
           clearTimeout(timeoutHandler);
           markContextUnhealthy("cloudflare page operation timeout");
           await cleanup();
-          reject("Timeout Error - page operation not completed");
+          reject("Timeout Error - page operation not completed" + describeCaptureFailure());
         }
       }, 120000);
     } catch (e) {

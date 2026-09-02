@@ -353,6 +353,18 @@ const schema = {
                 { "type": "string" },
                 { "type": "array", "items": { "type": "string" }, "minItems": 1 }
             ]
+        },
+        // 捕获通道参数（用于 getSource，数据由页面异步接口返回而非文档 HTML 时）
+        "captureUrl": {
+            "oneOf": [
+                { "type": "string", "minLength": 1 },
+                { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+            ]
+        },
+        "captureNotFoundStatus": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 100, "maximum": 599 },
+            "minItems": 1
         }
     },
     "anyOf": [
