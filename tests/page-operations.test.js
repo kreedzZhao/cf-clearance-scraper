@@ -44,6 +44,62 @@ describe("page operations", () => {
     expect(clicks).toEqual(["search"]);
   });
 
+  test("prefixes bare XPath selectors so puppeteer's locator can resolve them", async () => {
+    const filled = [];
+    const clicks = [];
+    const elements = new Map([
+      ["xpath=//input[@id='parcelSearchInput']", {
+        fill: jest.fn(async (value) => filled.push(value)),
+      }],
+      ["xpath=//input[@id='parcelSearchInput']/../button", {
+        click: jest.fn(() => clicks.push("search")),
+      }],
+    ]);
+    const page = {
+      locator: jest.fn(async (selector) => elements.get(selector)),
+      evaluate: jest.fn(async () => undefined),
+    };
+
+    await executePageOperation(page, PageOperationType.INPUT_AND_CLICK, {
+      trackingNumber: "CS000638190SI",
+      inputXpath: "//input[@id='parcelSearchInput']",
+      buttonXpathArr: ["//input[@id='parcelSearchInput']/../button"],
+      postClickTimeoutMs: 1000,
+      postClickPollIntervalMs: 100,
+    });
+
+    expect(page.locator).toHaveBeenCalledWith("xpath=//input[@id='parcelSearchInput']");
+    expect(page.locator).toHaveBeenCalledWith("xpath=//input[@id='parcelSearchInput']/../button");
+    expect(filled).toEqual(["CS000638190SI"]);
+    expect(clicks).toEqual(["search"]);
+  });
+
+  test("passes CSS selectors through to the locator untouched", async () => {
+    const filled = [];
+    const clicks = [];
+    const elements = new Map([
+      ["#parcelSearchInput", { fill: jest.fn(async (value) => filled.push(value)) }],
+      ["button.search", { click: jest.fn(() => clicks.push("search")) }],
+    ]);
+    const page = {
+      locator: jest.fn(async (selector) => elements.get(selector)),
+      evaluate: jest.fn(async () => undefined),
+    };
+
+    await executePageOperation(page, PageOperationType.INPUT_AND_CLICK, {
+      trackingNumber: "123456",
+      inputXpath: "#parcelSearchInput",
+      buttonXpathArr: ["button.search"],
+      postClickTimeoutMs: 1000,
+      postClickPollIntervalMs: 100,
+    });
+
+    expect(page.locator).toHaveBeenCalledWith("#parcelSearchInput");
+    expect(page.locator).toHaveBeenCalledWith("button.search");
+    expect(filled).toEqual(["123456"]);
+    expect(clicks).toEqual(["search"]);
+  });
+
   test("allows INPUTS_AND_CLICK request config", () => {
     const result = reqValidate({
       mode: "source",

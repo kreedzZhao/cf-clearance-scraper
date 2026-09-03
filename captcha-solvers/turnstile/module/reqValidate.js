@@ -42,6 +42,27 @@ const stopConditionItemSchema = {
     "additionalProperties": false
 }
 
+// 页面操作前需要点掉的可选遮罩（cookie 同意弹窗、首访介绍弹窗等）
+const dismissOverlayProperties = {
+    "dismissXpathArr": {
+        "type": "array",
+        "items": { "type": "string", "minLength": 1 },
+        "minItems": 1
+    },
+    "dismissTimeoutMs": {
+        "type": "integer",
+        "minimum": 1
+    },
+    "dismissPollIntervalMs": {
+        "type": "integer",
+        "minimum": 1
+    },
+    "dismissSettleMs": {
+        "type": "integer",
+        "minimum": 0
+    }
+}
+
 const commonOperationConfigProperties = {
     "postClickTimeoutMs": {
         "type": "integer",
@@ -143,6 +164,12 @@ const schema = {
         "targetUrl": {
             "type": "string",
             "format": "uri"
+        },
+        // recaptcha source 参数：targetUrl 返回这些状态码时按「查不到」处理
+        "targetNotFoundStatus": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 100, "maximum": 599 },
+            "minItems": 1
         },
         // arco_tracking source 参数
         "pageUrl": {
@@ -268,6 +295,7 @@ const schema = {
                             "type": "array",
                             "items": { "type": "string" }
                         },
+                        ...dismissOverlayProperties,
                         ...commonOperationConfigProperties
                     },
                     "additionalProperties": false
@@ -275,6 +303,7 @@ const schema = {
                 {
                     "type": "object",
                     "properties": {
+                        ...dismissOverlayProperties,
                         "steps": {
                             "type": "array",
                             "minItems": 2,
@@ -341,6 +370,7 @@ const schema = {
                             "type": "integer",
                             "minimum": 0
                         },
+                        ...dismissOverlayProperties,
                         ...commonOperationConfigProperties
                     },
                     "required": ["inputs", "buttonXpathArr"],

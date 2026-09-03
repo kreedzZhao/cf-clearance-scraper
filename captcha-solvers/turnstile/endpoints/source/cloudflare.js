@@ -1,17 +1,8 @@
 const { executePageOperation, PageOperationEarlyTermination } = require("../operations/query.js");
 const { applyUserAgent } = require("../../module/pageOptions");
-const { matchesResponseUrl, normalizePatterns } = require("../../module/responseMatch");
+const { matchesResponseUrl, normalizePatterns, normalizeStatusList } = require("../../module/responseMatch");
 
 const DEFAULT_CAPTURE_NOT_FOUND_STATUS = [404];
-
-function normalizeStatusList(value, fallback) {
-  if (value === undefined || value === null) return fallback;
-  const list = Array.isArray(value) ? value : [value];
-  const parsed = list
-    .map((item) => Number(item))
-    .filter((item) => Number.isInteger(item));
-  return parsed.length > 0 ? parsed : fallback;
-}
 
 function getRequestMethod(res) {
   try {

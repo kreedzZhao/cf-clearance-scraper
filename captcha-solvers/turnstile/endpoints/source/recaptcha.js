@@ -1,5 +1,9 @@
 const { executePageOperation, PageOperationEarlyTermination } = require("../operations/query");
 const { applyUserAgent } = require("../../module/pageOptions");
+const { normalizeStatusList } = require("../../module/responseMatch");
+
+// 默认为空：不配置 targetNotFoundStatus 时，目标接口的错误状态码沿用原有的 reject 行为
+const DEFAULT_TARGET_NOT_FOUND_STATUS = [];
 
 const BLOCKED_HOSTS = new Set([
   "b.delivery.consentmanager.net",
@@ -145,6 +149,7 @@ function attachTargetResponseHandlers({
   page,
   url,
   targetUrl,
+  notFoundStatusList = DEFAULT_TARGET_NOT_FOUND_STATUS,
   getIsResolved,
   setResolved,
   clearTimers,
@@ -173,6 +178,16 @@ function attachTargetResponseHandlers({
 
       // 监控当前页面上的目标 API/页面响应。
       if (res.url().includes(targetUrl)) {
+        // 查不到的单号：目标接口返回约定状态码时属于业务结果而非失败，
+        // 直接返回并保留上下文复用（未配置 targetNotFoundStatus 时此分支不生效）
+        if (notFoundStatusList.includes(res.status())) {
+          setResolved(true);
+          clearTimers();
+          await cleanup();
+          resolve("Tracking not found");
+          return;
+        }
+
         // 2xx 和 3xx 错误不重试，直接返回错误结果
         if (res.status() < 200 || res.status() >= 400) {
           setResolved(true);
@@ -210,10 +225,15 @@ function attachTargetResponseHandlers({
   };
 }
 
-function getRecaptchaSource({ url, proxy, operationType, operationConfig, targetUrl, userAgent, blockUnneededRequests = true }) {
+function getRecaptchaSource({ url, proxy, operationType, operationConfig, targetUrl, targetNotFoundStatus, userAgent, blockUnneededRequests = true }) {
   return new Promise(async (resolve, reject) => {
     if (!url) return reject("Missing url parameter");
     if (!targetUrl) return reject("Missing targetUrl parameter");
+
+    const notFoundStatusList = normalizeStatusList(
+      targetNotFoundStatus,
+      DEFAULT_TARGET_NOT_FOUND_STATUS
+    );
 
     let context = null;
     let page = null;
@@ -311,6 +331,7 @@ function getRecaptchaSource({ url, proxy, operationType, operationConfig, target
         page,
         url,
         targetUrl,
+        notFoundStatusList,
         getIsResolved: () => isResolved,
         setResolved: (value) => {
           isResolved = value;

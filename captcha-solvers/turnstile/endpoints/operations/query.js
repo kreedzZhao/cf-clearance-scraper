@@ -46,6 +46,17 @@ function toXPath(selector) {
   return selector.startsWith('xpath=') ? selector.slice(6) : selector;
 }
 
+/**
+ * page.locator 只认 Puppeteer 的选择器语法：CSS，或带 `xpath=` / `xpath/` 前缀的 XPath。
+ * 裸 `//foo` 会掉到 CSS 分支被 querySelector 解析，从而永远匹配不到元素。
+ * 这里统一补上前缀，让 locator 与走 page.evaluate 的 selectorExists / clearInputValue
+ * （两者本来就认裸 XPath）行为一致。CSS 选择器与已带前缀的 XPath 原样透传。
+ */
+function toLocatorSelector(selector) {
+  const value = String(selector || '');
+  return value.startsWith('//') ? `xpath=${value}` : value;
+}
+
 async function selectorExists(page, selector) {
   if (!selector) {
     return false;
@@ -74,6 +85,102 @@ async function selectorExists(page, selector) {
   } catch (e) {
     return false;
   }
+}
+
+const DEFAULT_DISMISS_TIMEOUT_MS = 3000;
+const DEFAULT_DISMISS_POLL_INTERVAL_MS = 200;
+const DEFAULT_DISMISS_SETTLE_MS = 400;
+
+function toPositiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function toNonNegativeInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+async function clickSelectorInPage(page, selector) {
+  try {
+    const xpathSelector = isXPathSelector(selector);
+    const rawSelector = xpathSelector ? toXPath(selector) : selector;
+
+    return await page.evaluate(({ rawSelector, xpathSelector }) => {
+      const element = xpathSelector
+        ? document.evaluate(
+            rawSelector,
+            document,
+            null,
+            XPathResult.FIRST_ORDERED_NODE_TYPE,
+            null
+          ).singleNodeValue
+        : document.querySelector(rawSelector);
+
+      if (!element) return false;
+
+      if (typeof element.scrollIntoView === 'function') {
+        element.scrollIntoView({ block: 'center', inline: 'center' });
+      }
+      element.click();
+      return true;
+    }, {
+      rawSelector,
+      xpathSelector,
+    });
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * 点掉可选的遮罩层（cookie 同意弹窗、首访介绍弹窗等）。
+ *
+ * 每个选择器都是「可选」的：等不到就跳过，点不动也只跳过，绝不让主流程失败。
+ * 复用上下文时这些弹窗往往根本不出现，同一份配置必须两种情况都能跑。
+ * 点击走页面内的 element.click()，因此不受遮罩遮挡与可交互性检查影响。
+ */
+async function dismissOptionalOverlays(page, config = {}) {
+  const selectors = Array.isArray(config.dismissXpathArr)
+    ? config.dismissXpathArr.filter(Boolean)
+    : [];
+
+  if (selectors.length === 0) {
+    return { attempted: 0, dismissed: 0 };
+  }
+
+  const timeoutMs = toPositiveInteger(config.dismissTimeoutMs, DEFAULT_DISMISS_TIMEOUT_MS);
+  const pollIntervalMs = toPositiveInteger(
+    config.dismissPollIntervalMs,
+    DEFAULT_DISMISS_POLL_INTERVAL_MS
+  );
+  const settleMs = toNonNegativeInteger(config.dismissSettleMs, DEFAULT_DISMISS_SETTLE_MS);
+
+  let dismissed = 0;
+
+  for (const selector of selectors) {
+    const deadline = Date.now() + timeoutMs;
+    let appeared = false;
+
+    while (Date.now() < deadline) {
+      if (await selectorExists(page, selector)) {
+        appeared = true;
+        break;
+      }
+      await sleep(pollIntervalMs);
+    }
+
+    if (!appeared) continue;
+
+    if (await clickSelectorInPage(page, selector)) {
+      dismissed += 1;
+      if (settleMs > 0) {
+        await sleep(settleMs);
+      }
+    }
+  }
+
+  return { attempted: selectors.length, dismissed };
 }
 
 async function getPageText(page) {
@@ -221,7 +328,7 @@ async function executeInputAndClick(page, config) {
   const inputWaitTimeout = 10000;
   let inputElement;
   while (!inputElement && (Date.now() - inputWaitStartTime) < inputWaitTimeout) {
-    inputElement = await page.locator(inputXpath);
+    inputElement = await page.locator(toLocatorSelector(inputXpath));
     if (!inputElement) {
       await sleep(200); // 等待 200ms 后重试
     }
@@ -253,7 +360,7 @@ async function executeInputAndClick(page, config) {
         //     throw new Error(`Button element not found within ${buttonWaitTimeout}ms: ${btnXpath}`);
         // }
 
-        let buttonElement = await page.locator(btnXpath);
+        let buttonElement = await page.locator(toLocatorSelector(btnXpath));
         if (!buttonElement) {
           continue; // 如果按钮不存在，跳过此次点击
         }
@@ -285,7 +392,7 @@ async function waitForElement(page, selector, timeoutMs, label) {
   const waitStartTime = Date.now();
   let element;
   while (!element && (Date.now() - waitStartTime) < timeoutMs) {
-    element = await page.locator(selector);
+    element = await page.locator(toLocatorSelector(selector));
     if (!element) {
       await sleep(200);
     }
@@ -376,7 +483,7 @@ async function executeInputsAndClick(page, config, options = {}) {
   }
 
   for (let btnXpath of buttonXpathArr) {
-    let buttonElement = await page.locator(btnXpath);
+    let buttonElement = await page.locator(toLocatorSelector(btnXpath));
     if (!buttonElement) {
       continue;
     }
@@ -440,7 +547,7 @@ async function executeMultiInputAndClick(page, config) {
     const inputWaitTimeout = 15000;
     let inputElement;
     while (!inputElement && (Date.now() - inputWaitStartTime) < inputWaitTimeout) {
-      inputElement = await page.locator(inputXpath);
+      inputElement = await page.locator(toLocatorSelector(inputXpath));
       if (!inputElement) {
         await sleep(200);
       }
@@ -458,7 +565,7 @@ async function executeMultiInputAndClick(page, config) {
 
     // 点击按钮
     for (let btnXpath of buttonXpathArr) {
-      let buttonElement = await page.locator(btnXpath);
+      let buttonElement = await page.locator(toLocatorSelector(btnXpath));
       if (!buttonElement) {
         continue;
       }
@@ -517,7 +624,7 @@ async function executeClick(page, config) {
         // }
 
 
-        let buttonElement = await page.locator(buttonXpath);
+        let buttonElement = await page.locator(toLocatorSelector(buttonXpath));
         if (!buttonElement) {
           continue; // 如果按钮不存在，跳过此次点击
         }
@@ -555,7 +662,10 @@ async function executePageOperation(page, operationType, operationConfig, option
   if (!operationType) {
     return; // 如果没有指定操作类型，直接返回
   }
-  
+
+  // 页面操作前先点掉可选遮罩（未配置 dismissXpathArr 时为空操作）
+  await dismissOptionalOverlays(page, operationConfig);
+
   switch (operationType) {
     case PageOperationType.INPUT_AND_CLICK:
       return await executeInputAndClick(page, operationConfig);
@@ -576,4 +686,6 @@ module.exports = {
   PageOperationType,
   executePageOperation,
   PageOperationEarlyTermination,
+  dismissOptionalOverlays,
+  toLocatorSelector,
 };

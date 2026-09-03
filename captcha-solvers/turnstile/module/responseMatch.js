@@ -43,4 +43,17 @@ function matchesResponseUrl(responseUrl, patterns) {
   return list.some((pattern) => matchesPattern(value, pattern));
 }
 
-module.exports = { matchesResponseUrl, normalizePatterns };
+/**
+ * 归一化 HTTP 状态码列表配置。
+ * 传 undefined/null 时返回 fallback；传了但没有合法整数时同样退回 fallback。
+ */
+function normalizeStatusList(value, fallback) {
+  if (value === undefined || value === null) return fallback;
+  const list = Array.isArray(value) ? value : [value];
+  const parsed = list
+    .map((item) => Number(item))
+    .filter((item) => Number.isInteger(item));
+  return parsed.length > 0 ? parsed : fallback;
+}
+
+module.exports = { matchesResponseUrl, normalizePatterns, normalizeStatusList };
