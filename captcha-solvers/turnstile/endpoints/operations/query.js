@@ -121,6 +121,11 @@ async function isClickableAtCenter(page, selector) {
 
       if (!element) return false;
 
+      // 置灰/禁用的控件不算“可点击”：真实 locator.click() 会一直等它变可交互直到超时（~30s），
+      // 退回页面内 element.click()（对 disabled 是安全的 no-op），让上层的 captureStopConditions 快速判定。
+      if (element.disabled === true) return false;
+      if (typeof element.getAttribute === 'function' && element.getAttribute('aria-disabled') === 'true') return false;
+
       if (typeof element.scrollIntoView === 'function') {
         element.scrollIntoView({ block: 'center', inline: 'center' });
       }
@@ -772,4 +777,5 @@ module.exports = {
   dismissOptionalOverlays,
   toLocatorSelector,
   matchStopCondition,
+  isClickableAtCenter,
 };
