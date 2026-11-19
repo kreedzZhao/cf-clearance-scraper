@@ -250,6 +250,54 @@ describe("cloudflare source", () => {
       await expect(promise).resolves.toBe('{"parcels":[{"status":"In transit"}]}');
     });
 
+    test("接口命中 captureFailStatus 时立即返回 Capture Failed 并丢弃上下文", async () => {
+      const page = createFakePage();
+      installFakeContextPool(page);
+
+      const promise = getCfSource({
+        url: PAGE_URL,
+        captureUrl: CAPTURE_URL,
+        captureFailStatus: [403],
+      });
+      await flush();
+
+      await page.emit("response", createFakeResponse({
+        url: API_URL,
+        status: 403,
+        body: '{"erro":true,"mensagem":"Não foi possível validar a solicitação."}',
+      }));
+
+      await expect(promise).resolves.toBe("Capture Failed: HTTP 403");
+      expect(global.contextPool.releaseContext).toHaveBeenCalledWith(
+        expect.anything(),
+        { forceClose: true, reason: "capture failed: HTTP 403" }
+      );
+    });
+
+    test("captureFailStatus 不影响其它非 2xx 的重试等待", async () => {
+      const page = createFakePage();
+      installFakeContextPool(page);
+
+      const promise = getCfSource({
+        url: PAGE_URL,
+        captureUrl: CAPTURE_URL,
+        captureFailStatus: [403],
+      });
+      await flush();
+
+      await page.emit("response", createFakeResponse({
+        url: API_URL,
+        status: 502,
+        body: "bad gateway",
+      }));
+      await page.emit("response", createFakeResponse({
+        url: API_URL,
+        body: '{"parcels":[]}',
+      }));
+
+      await expect(promise).resolves.toBe('{"parcels":[]}');
+    });
+
     test("配置 captureUrl 后文档 HTML 不再作为结果", async () => {
       global.timeOut = 300;
       const page = createFakePage();
@@ -291,6 +339,114 @@ describe("cloudflare source", () => {
     });
   });
 
+  describe("captureTimeoutMs 兜底（不做页面操作，pos-indonesia 场景）", () => {
+    const POS_URL = "https://www.posindonesia.co.id/en/tracking/CC008008495ID";
+    const POS_CAPTURE = "co.id/en/tracking/";
+    const RSC_OK = '0:["$@1",["abc",null]]\n1:{"receiptId":"CC008008495ID"}\n';
+
+    beforeEach(() => {
+      jest.useFakeTimers({ doNotFake: ["setImmediate", "nextTick"] });
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    test("一直没有捕获结果时按 captureTimeoutMs 结束并丢弃上下文", async () => {
+      const page = createFakePage();
+      installFakeContextPool(page);
+
+      const promise = getCfSource({
+        url: POS_URL,
+        captureUrl: POS_CAPTURE,
+        targetContent: '0:["$@1",["',
+        captureTimeoutMs: 25000,
+      });
+      await flush();
+      // 文档到了，但 server action 一直没来
+      await page.emit("response", createFakeResponse({ url: POS_URL, body: "<html>tracking</html>" }));
+
+      jest.advanceTimersByTime(25000);
+      await flush();
+
+      await expect(promise).resolves.toBe("Capture Timeout");
+      expect(page.close).toHaveBeenCalled();
+      expect(global.contextPool.releaseContext).toHaveBeenCalledWith(
+        expect.anything(),
+        { forceClose: true, reason: "capture timeout" }
+      );
+    });
+
+    test("计时从导航开始，server action 在超时前返回则正常取数且不会再触发超时", async () => {
+      const page = createFakePage();
+      installFakeContextPool(page);
+
+      const promise = getCfSource({
+        url: POS_URL,
+        captureUrl: POS_CAPTURE,
+        targetContent: '0:["$@1",["',
+        captureTimeoutMs: 25000,
+      });
+      await flush();
+      await page.emit("response", createFakeResponse({ url: POS_URL, body: "<html>tracking</html>" }));
+      jest.advanceTimersByTime(10000);
+      await page.emit("response", createFakeResponse({ url: POS_URL, method: "POST", body: RSC_OK }));
+
+      await expect(promise).resolves.toBe(RSC_OK);
+      jest.advanceTimersByTime(30000);
+      await flush();
+      expect(global.contextPool.releaseContext).toHaveBeenCalledTimes(1);
+    });
+
+    test("未配置 captureTimeoutMs 时行为不变：只受全局超时约束", async () => {
+      const page = createFakePage();
+      installFakeContextPool(page);
+      global.timeOut = 120000;
+
+      const promise = getCfSource({
+        url: POS_URL,
+        captureUrl: POS_CAPTURE,
+        targetContent: '0:["$@1",["',
+      });
+      const settled = jest.fn();
+      promise.then(settled, settled);
+      await flush();
+      await page.emit("response", createFakeResponse({ url: POS_URL, body: "<html>tracking</html>" }));
+
+      jest.advanceTimersByTime(60000);
+      await flush();
+      expect(settled).not.toHaveBeenCalled();
+
+      jest.advanceTimersByTime(60000);
+      await flush();
+      await expect(promise).rejects.toMatch(/^Timeout Error/);
+    });
+
+    test("做页面操作的请求不在导航时计时（brazil-correios 等现有用法不变）", async () => {
+      const page = createFakePage();
+      installFakeContextPool(page);
+
+      const promise = getCfSource({
+        url: "https://rastreamento.correios.com.br/app/index.php",
+        captureUrl: ["/app/resultado.php"],
+        captureTimeoutMs: 20000,
+        operationType: "INPUT_AND_CLICK",
+        operationConfig: {
+          trackingNumber: "AA123456785BR",
+          inputXpath: "//input[@id='objeto']",
+          buttonXpathArr: ["//button[@id='b-pesquisar']"],
+        },
+      });
+      const settled = jest.fn();
+      promise.then(settled, settled);
+      await flush();
+
+      // 文档还没到、操作还没执行：兜底不应启动
+      jest.advanceTimersByTime(20000);
+      await flush();
+      expect(settled).not.toHaveBeenCalled();
+    });
+  });
+
   describe("参数校验", () => {
     test("接受 DPD RO 的新配置", () => {
       expect(reqValidate({
@@ -299,6 +455,17 @@ describe("cloudflare source", () => {
         url: PAGE_URL,
         captureUrl: CAPTURE_URL,
         captureNotFoundStatus: [404],
+      })).toBe(true);
+    });
+
+    test("接受 captureFailStatus", () => {
+      expect(reqValidate({
+        mode: "source",
+        action: "cloudflare",
+        url: PAGE_URL,
+        captureUrl: [CAPTURE_URL],
+        captureNotFoundStatus: [404],
+        captureFailStatus: [403],
       })).toBe(true);
     });
 

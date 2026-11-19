@@ -347,7 +347,7 @@ const schema = {
                                     },
                                     "inputMethod": {
                                         "type": "string",
-                                        "enum": ["type", "fill"]
+                                        "enum": ["type", "fill", "set"]
                                     },
                                     "typeDelayMs": {
                                         "type": "integer",
@@ -364,7 +364,7 @@ const schema = {
                         },
                         "inputMethod": {
                             "type": "string",
-                            "enum": ["type", "fill"]
+                            "enum": ["type", "fill", "set"]
                         },
                         "typeDelayMs": {
                             "type": "integer",
@@ -394,6 +394,24 @@ const schema = {
         "captureNotFoundStatus": {
             "type": "array",
             "items": { "type": "integer", "minimum": 100, "maximum": 599 },
+            "minItems": 1
+        },
+        // 命中即判定本次捕获失败：立刻释放上下文并返回 "Capture Failed: HTTP <status>"，
+        // 不再等全局超时。用于站点按会话/风控直接拒绝（如 403）且前端不会自动重试的场景。
+        "captureFailStatus": {
+            "type": "array",
+            "items": { "type": "integer", "minimum": 100, "maximum": 599 },
+            "minItems": 1
+        },
+        // 页面操作完成后这么久仍没拿到捕获结果就判定失败（页面拒绝提交、请求没发出、响应体读取异常等），
+        // 立即释放上下文并返回 "Capture Timeout"，不再等全局超时
+        "captureTimeoutMs": { "type": "integer", "minimum": 1000 },
+        // 页面操作完成后、等待捕获期间轮询的结束条件（同 stopConditions 结构）。用于页面拒绝提交、
+        // 只渲染错误文案或跳转而不发出捕获请求的场景：命中即关闭页面并返回该条件的 result。
+        // 与 operationConfig.stopConditions 不同，它不阻塞点击后的流程，不会丢弃正常到达的捕获响应。
+        "captureStopConditions": {
+            "type": "array",
+            "items": stopConditionItemSchema,
             "minItems": 1
         }
     },

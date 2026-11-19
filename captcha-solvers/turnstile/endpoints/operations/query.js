@@ -101,6 +101,66 @@ function toNonNegativeInteger(value, fallback) {
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
+/**
+ * 判断元素中心点是否真的能被鼠标点到。
+ *
+ * Puppeteer 的 Locator.click() 是按坐标发真实鼠标事件的，命中的是该坐标上
+ * 层叠最高的元素。轮播图、横幅、遮罩盖住按钮时，点击会落在盖住它的元素上，
+ * 而 Puppeteer **不会报错**（确实有元素收到了点击），于是流程静默失效。
+ * 实测 ptt.gov.tr：查询按钮被 hero 轮播的 <img> 盖住，elementFromPoint 返回 IMG。
+ */
+async function isClickableAtCenter(page, selector) {
+  try {
+    const xpathSelector = isXPathSelector(selector);
+    const rawSelector = xpathSelector ? toXPath(selector) : selector;
+
+    return await page.evaluate(({ rawSelector, xpathSelector }) => {
+      const element = xpathSelector
+        ? document.evaluate(rawSelector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
+        : document.querySelector(rawSelector);
+
+      if (!element) return false;
+
+      if (typeof element.scrollIntoView === 'function') {
+        element.scrollIntoView({ block: 'center', inline: 'center' });
+      }
+
+      const rect = element.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return false;
+
+      const cx = rect.x + rect.width / 2;
+      const cy = rect.y + rect.height / 2;
+      if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) return false;
+
+      const topElement = document.elementFromPoint(cx, cy);
+      if (!topElement) return false;
+
+      return topElement === element || element.contains(topElement) || topElement.contains(element);
+    }, { rawSelector, xpathSelector });
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * 点击元素：能真实点到就发真实鼠标事件（对风控更友好），
+ * 被遮挡时退回页面内 element.click()，避免静默点空。
+ */
+async function clickElement(page, selector) {
+  if (await isClickableAtCenter(page, selector)) {
+    const locator = await page.locator(toLocatorSelector(selector));
+    if (locator) {
+      await locator.click();
+      return;
+    }
+  }
+
+  const clicked = await clickSelectorInPage(page, selector);
+  if (!clicked) {
+    throw new Error(`element not found or not clickable: ${selector}`);
+  }
+}
+
 async function clickSelectorInPage(page, selector) {
   try {
     const xpathSelector = isXPathSelector(selector);
@@ -364,10 +424,10 @@ async function executeInputAndClick(page, config) {
         if (!buttonElement) {
           continue; // 如果按钮不存在，跳过此次点击
         }
-        
+
         // 定位并点击按钮
     try {
-      await buttonElement.click();
+      await clickElement(page, btnXpath);
         } catch (clickError) {
             throw new Error(`Failed to click button element: ${clickError.message}`);
         }
@@ -423,6 +483,27 @@ async function clearInputValue(page, selector) {
   }, { selector });
 }
 
+// 直接写 value 并派发 input/change，不走键盘。用于长串输入时键盘事件会丢的页面
+// （brazil-correios 合查 279 字：fill/type 只进前 12–248 字，前端按"单号无效"拒绝提交）。
+async function setInputValue(page, selector, value) {
+  const written = await page.evaluate(({ selector, value }) => {
+    const isXPath = selector.startsWith('//') || selector.startsWith('xpath=');
+    const rawSelector = selector.startsWith('xpath=') ? selector.slice(6) : selector;
+    const element = isXPath
+      ? document.evaluate(rawSelector, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
+      : document.querySelector(rawSelector);
+    if (!element) return null;
+    element.focus();
+    element.value = value;
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    return element.value;
+  }, { selector, value });
+  if (written !== value) {
+    throw new Error(`input value mismatch after set (got ${written === null ? 'no element' : written.length + ' chars'}, want ${value.length})`);
+  }
+}
+
 async function typeIntoInput(page, inputElement, selector, value, delayMs) {
   if (!page.keyboard || typeof page.keyboard.type !== 'function') {
     throw new Error('page.keyboard.type is required for type input method');
@@ -474,6 +555,8 @@ async function executeInputsAndClick(page, config, options = {}) {
       const delay = inputs[i].typeDelayMs ?? typeDelayMs;
       if (method === 'fill') {
         await inputElement.fill(inputValue);
+      } else if (method === 'set') {
+        await setInputValue(page, inputXpath, inputValue);
       } else {
         await typeIntoInput(page, inputElement, inputXpath, inputValue, delay);
       }
@@ -492,7 +575,7 @@ async function executeInputsAndClick(page, config, options = {}) {
       if (typeof options.beforeClick === 'function') {
         await options.beforeClick();
       }
-      await buttonElement.click();
+      await clickElement(page, btnXpath);
     } catch (clickError) {
       throw new Error(`Failed to click button element: ${clickError.message}`);
     }
@@ -571,7 +654,7 @@ async function executeMultiInputAndClick(page, config) {
       }
 
       try {
-        await buttonElement.click();
+        await clickElement(page, btnXpath);
       } catch (clickError) {
         throw new Error(`Step ${i + 1}: Failed to click button: ${clickError.message}`);
       }
@@ -631,7 +714,7 @@ async function executeClick(page, config) {
         
         // 定位并点击按钮
         try {
-            await buttonElement.click();
+            await clickElement(page, buttonXpath);
         } catch (clickError) {
             throw new Error(`Failed to click button element: ${clickError.message}`);
         }
@@ -688,4 +771,5 @@ module.exports = {
   PageOperationEarlyTermination,
   dismissOptionalOverlays,
   toLocatorSelector,
+  matchStopCondition,
 };

@@ -1,8 +1,9 @@
-const { executePageOperation, PageOperationEarlyTermination } = require("../operations/query.js");
+const { executePageOperation, PageOperationEarlyTermination, matchStopCondition } = require("../operations/query.js");
 const { applyUserAgent } = require("../../module/pageOptions");
 const { matchesResponseUrl, normalizePatterns, normalizeStatusList } = require("../../module/responseMatch");
 
 const DEFAULT_CAPTURE_NOT_FOUND_STATUS = [404];
+const CAPTURE_STOP_POLL_INTERVAL_MS = 500;
 
 function getRequestMethod(res) {
   try {
@@ -15,7 +16,7 @@ function getRequestMethod(res) {
   }
 }
 
-function getCfSource({ url, proxy, operationType, operationConfig, targetContent, userAgent, captureUrl, captureNotFoundStatus }) {
+function getCfSource({ url, proxy, operationType, operationConfig, targetContent, userAgent, captureUrl, captureNotFoundStatus, captureFailStatus, captureTimeoutMs, captureStopConditions }) {
   return new Promise(async (resolve, reject) => {
     if (!url) return reject("Missing url parameter");
 
@@ -33,8 +34,26 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
       captureNotFoundStatus,
       DEFAULT_CAPTURE_NOT_FOUND_STATUS
     );
+    const captureFailStatusList = normalizeStatusList(captureFailStatus, []);
     let lastCaptureFailure = null;
     let operationTimeoutHandler = null;
+    let captureTimeoutHandler = null;
+    let captureStopPoller = null;
+
+    // 捕获兜底：captureTimeoutMs 内没拿到捕获结果就结束并关 tab，不再挂到 120s 全局超时。
+    // 只有请求体显式带 captureTimeoutMs 时才生效，未配置的 channel 行为不变。
+    const armCaptureTimeout = () => {
+      if (!captureEnabled || !Number.isInteger(captureTimeoutMs) || captureTimeoutMs <= 0) return;
+      if (captureTimeoutHandler) return;
+      captureTimeoutHandler = setTimeout(async () => {
+        if (isResolved) return;
+        isResolved = true;
+        clearTimeout(timeoutHandler);
+        markContextUnhealthy("capture timeout");
+        await cleanup();
+        resolve("Capture Timeout" + describeCaptureFailure());
+      }, captureTimeoutMs);
+    };
 
     const describeCaptureFailure = () =>
       lastCaptureFailure
@@ -53,6 +72,14 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
       if (operationTimeoutHandler) {
         clearTimeout(operationTimeoutHandler);
         operationTimeoutHandler = null;
+      }
+      if (captureTimeoutHandler) {
+        clearTimeout(captureTimeoutHandler);
+        captureTimeoutHandler = null;
+      }
+      if (captureStopPoller) {
+        clearInterval(captureStopPoller);
+        captureStopPoller = null;
       }
       if (page) {
         try {
@@ -185,6 +212,26 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
                 await executePageOperation(page, operationType, operationConfig);
                 operationDone = true;
                 operationCompleted = true;
+                armCaptureTimeout();
+                if (captureEnabled && Array.isArray(captureStopConditions) && captureStopConditions.length > 0) {
+                  let polling = false;
+                  captureStopPoller = setInterval(async () => {
+                    if (isResolved || polling) return;
+                    polling = true;
+                    try {
+                      const matched = await matchStopCondition(page, captureStopConditions);
+                      if (matched && !isResolved) {
+                        isResolved = true;
+                        clearTimeout(timeoutHandler);
+                        await cleanup();
+                        resolve(matched.result);
+                      }
+                    } catch (e) {
+                    } finally {
+                      polling = false;
+                    }
+                  }, CAPTURE_STOP_POLL_INTERVAL_MS);
+                }
               } catch (operationError) {
                 if (operationError instanceof PageOperationEarlyTermination || operationError?.isPageOperationEarlyTermination) {
                   isResolved = true;
@@ -251,6 +298,15 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
               return;
             }
 
+            if (captureFailStatusList.includes(status)) {
+              isResolved = true;
+              clearTimeout(timeoutHandler);
+              markContextUnhealthy(`capture failed: HTTP ${status}`);
+              await cleanup();
+              resolve(`Capture Failed: HTTP ${status}`);
+              return;
+            }
+
             if (status < 200 || status >= 300) {
               // 接口可能在拿到 cf_clearance 之前先失败一次，前端会自行重试，
               // 这里只记录状态用于超时诊断，不提前终止
@@ -275,6 +331,12 @@ function getCfSource({ url, proxy, operationType, operationConfig, targetContent
           }
         } catch (e) {}
       });
+      // 不做页面操作的捕获请求（例：pos-indonesia 文档 → Turnstile → server action POST），
+      // 数据请求由页面自己发起，没有"操作完成"这个时点，兜底从开始导航计时。
+      // 做页面操作的请求仍在操作完成后才计时（executePageOperation 之后），行为不变。
+      if (!requiresOperation) {
+        armCaptureTimeout();
+      }
       await page.goto(url, {
         waitUntil: "domcontentloaded",
         timeout: 30000

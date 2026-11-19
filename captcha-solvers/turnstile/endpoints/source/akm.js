@@ -1,5 +1,3 @@
-const { max } = require("@xenova/transformers");
-const { executePageOperation } = require("../operations/query");
 const { applyUserAgent } = require("../../module/pageOptions");
 
 function getAkmSource({ url, proxy, operationType, operationConfig, targetUrl, userAgent }) {
