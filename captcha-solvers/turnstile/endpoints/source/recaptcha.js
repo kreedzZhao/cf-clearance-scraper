@@ -225,7 +225,7 @@ function attachTargetResponseHandlers({
   };
 }
 
-function getRecaptchaSource({ url, proxy, operationType, operationConfig, targetUrl, targetNotFoundStatus, userAgent, blockUnneededRequests = true }) {
+function getRecaptchaSource({ url, proxy, operationType, operationConfig, targetUrl, targetNotFoundStatus, userAgent, blockUnneededRequests = true, captureTimeoutMs }) {
   return new Promise(async (resolve, reject) => {
     if (!url) return reject("Missing url parameter");
     if (!targetUrl) return reject("Missing targetUrl parameter");
@@ -373,16 +373,24 @@ function getRecaptchaSource({ url, proxy, operationType, operationConfig, target
         }
       }
 
-      // 最大超时时间 2 min
+      // 捕获兜底：页面操作完成后，最多再等待目标接口响应这么久。
+      // 显式传入正整数 captureTimeoutMs 时启用提前超时：到点即释放上下文/槽位，
+      // 并 resolve 成可映射独立 sub_code 的哨兵结果（"Capture Timeout"，与 cloudflare source 分支一致），
+      // 不再挂满 120s 后回 500。未配置的渠道行为完全不变（仍是硬编码 120s reject）。
+      const hasCaptureTimeout = Number.isInteger(captureTimeoutMs) && captureTimeoutMs > 0;
       operationTimeoutHandler = setTimeout(async () => {
         if (!isResolved) {
           isResolved = true;
           clearTimers();
           markContextUnhealthy("recaptcha page operation timeout");
           await cleanup();
-          reject("Timeout Error - page operation not completed");
+          if (hasCaptureTimeout) {
+            resolve("Capture Timeout");
+          } else {
+            reject("Timeout Error - page operation not completed");
+          }
         }
-      }, 120000);
+      }, hasCaptureTimeout ? captureTimeoutMs : 120000);
     } catch (e) {
       if (!isResolved) {
         isResolved = true;

@@ -404,7 +404,7 @@ const schema = {
             "minItems": 1
         },
         // 页面操作完成后这么久仍没拿到捕获结果就判定失败（页面拒绝提交、请求没发出、响应体读取异常等），
-        // 立即释放上下文并返回 "Capture Timeout"，不再等全局超时
+        // 立即释放上下文并返回 "Capture Timeout"，不再等全局超时。recaptcha / cloudflare source 共用。
         "captureTimeoutMs": { "type": "integer", "minimum": 1000 },
         // 页面操作完成后、等待捕获期间轮询的结束条件（同 stopConditions 结构）。用于页面拒绝提交、
         // 只渲染错误文案或跳转而不发出捕获请求的场景：命中即关闭页面并返回该条件的 result。
