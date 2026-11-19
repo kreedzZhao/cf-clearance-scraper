@@ -395,6 +395,12 @@ const schema = {
             "type": "array",
             "items": { "type": "integer", "minimum": 100, "maximum": 599 },
             "minItems": 1
+        },
+        // recaptcha/cloudflare source 提前超时（opt-in）：页面操作完成后等待目标接口响应的上限，单位 ms。
+        // 不传时保持硬编码 120s 行为不变。
+        "captureTimeoutMs": {
+            "type": "integer",
+            "minimum": 1000
         }
     },
     "anyOf": [
