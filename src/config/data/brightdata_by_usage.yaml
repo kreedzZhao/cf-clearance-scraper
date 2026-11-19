@@ -1,5 +1,5 @@
 host: brd.superproxy.io
-port: 33335
+port: 44445
 brightdata_username_template: "brd-customer-{username}-zone-datacenter_proxy_by_usage"
 regions:
   - ge
